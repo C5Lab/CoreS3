@@ -1,0 +1,35 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "uart_handler.c"
+        "ui_helpers.c"
+        "cardkb.c"
+        "screens/home_screen.c"
+        "screens/wifi_scan_screen.c"
+        "screens/attack_select_screen.c"
+        "screens/evil_twin_screen.c"
+        "screens/keyboard_screen.c"
+        "screens/global_attacks_screen.c"
+        "screens/handshaker_screen.c"
+        "screens/portal_screen.c"
+        "screens/wardrive_screen.c"
+        "screens/sae_overflow_screen.c"
+        "screens/sniffer_screen.c"
+        "screens/karma_screen.c"
+        "screens/network_observer_screen.c"
+        "screens/compromised_data_screen.c"
+        "screens/bluetooth_screen.c"
+        "screens/deauth_detector_screen.c"
+    INCLUDE_DIRS
+        "."
+        "screens"
+    REQUIRES
+        driver
+        esp_driver_uart
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_timer
+        nvs_flash
+        esp_lvgl_port
+        m5stack_core_s3
+)
