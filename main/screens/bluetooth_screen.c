@@ -127,7 +127,7 @@ static void show_airtag_scan(void)
 
     lv_obj_t *at_label = lv_label_create(at_col);
     lv_label_set_text(at_label, "AirTags");
-    lv_obj_set_style_text_color(at_label, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(at_label, ui_text_color(), 0);
     lv_obj_set_style_text_font(at_label, &lv_font_montserrat_14, 0);
 
     /* SmartTags column */
@@ -149,7 +149,7 @@ static void show_airtag_scan(void)
 
     lv_obj_t *st_label = lv_label_create(st_col);
     lv_label_set_text(st_label, "SmartTags");
-    lv_obj_set_style_text_color(st_label, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(st_label, ui_text_color(), 0);
     lv_obj_set_style_text_font(st_label, &lv_font_montserrat_14, 0);
 
     /* Start UART monitoring + keyboard polling */
@@ -275,7 +275,7 @@ static void show_tracking_screen(int idx)
 
     lv_obj_t *mac_lbl = lv_label_create(center);
     lv_label_set_text(mac_lbl, dev->mac);
-    lv_obj_set_style_text_color(mac_lbl, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(mac_lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(mac_lbl, &lv_font_montserrat_10, 0);
 
     track_rssi_lbl = lv_label_create(center);
@@ -285,7 +285,7 @@ static void show_tracking_screen(int idx)
 
     lv_obj_t *rssi_caption = lv_label_create(center);
     lv_label_set_text(rssi_caption, "RSSI");
-    lv_obj_set_style_text_color(rssi_caption, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(rssi_caption, ui_muted_color(), 0);
     lv_obj_set_style_text_font(rssi_caption, &lv_font_montserrat_12, 0);
 
     char cmd[40];
@@ -352,7 +352,7 @@ static void show_bt_device_list(void)
     if (bt_device_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "No devices found.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(lbl);
         locator_kb_timer = lv_timer_create(poll_locator_kb, 50, NULL);
@@ -371,7 +371,7 @@ static void show_bt_device_list(void)
     /* Summary row */
     lv_obj_t *summary = lv_obj_create(list);
     lv_obj_set_size(summary, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_color(summary, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(summary, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(summary, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(summary, 6, 0);
     lv_obj_set_style_border_width(summary, 0, 0);
@@ -392,7 +392,7 @@ static void show_bt_device_list(void)
     for (int i = 0; i < bt_device_count; i++) {
         lv_obj_t *btn = lv_btn_create(list);
         lv_obj_set_size(btn, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(btn, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
         lv_obj_set_style_bg_color(btn, UI_ACCENT_PURPLE, LV_STATE_PRESSED);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_all(btn, 4, 0);
@@ -430,7 +430,7 @@ static void show_bt_device_list(void)
         if (bt_devices[i].name[0]) {
             lv_obj_t *name_l = lv_label_create(info);
             lv_label_set_text(name_l, bt_devices[i].name);
-            lv_obj_set_style_text_color(name_l, UI_TEXT_COLOR, 0);
+            lv_obj_set_style_text_color(name_l, ui_text_color(), 0);
             lv_obj_set_style_text_font(name_l, &lv_font_montserrat_10, 0);
             lv_obj_set_width(name_l, LV_PCT(100));
             lv_label_set_long_mode(name_l, LV_LABEL_LONG_DOT);
@@ -438,7 +438,7 @@ static void show_bt_device_list(void)
 
         lv_obj_t *mac_l = lv_label_create(info);
         lv_label_set_text(mac_l, bt_devices[i].mac);
-        lv_obj_set_style_text_color(mac_l, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(mac_l, ui_muted_color(), 0);
         lv_obj_set_style_text_font(mac_l, &lv_font_montserrat_10, 0);
     }
 
@@ -536,7 +536,7 @@ static void show_bt_locator_scanning(void)
 
     lv_obj_t *lbl = lv_label_create(center);
     lv_label_set_text(lbl, "Scanning BLE devices...");
-    lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
 
     uart_start_collect("Summary:", bt_scan_complete);
@@ -583,8 +583,8 @@ static void show_bt_menu(void)
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_y(grid, 36);
 
-    ui_create_tile(grid, "AirTag\nScan",   UI_ACCENT_CYAN,   on_airtag,  NULL);
-    ui_create_tile(grid, "BT\nLocator",    UI_ACCENT_PURPLE, on_locator, NULL);
+    ui_create_tile(grid, LV_SYMBOL_WIFI,      "AirTag\nScan",   UI_ACCENT_CYAN,   on_airtag,  NULL);
+    ui_create_tile(grid, LV_SYMBOL_BLUETOOTH, "BT\nLocator",    UI_ACCENT_PURPLE, on_locator, NULL);
 }
 
 /* ================================================================== */

@@ -144,7 +144,7 @@ static void show_html_picker(void)
     if (sd_file_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "No HTML files on SD.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(lbl);
         return;
@@ -162,7 +162,7 @@ static void show_html_picker(void)
     for (int i = 0; i < sd_file_count; i++) {
         lv_obj_t *btn = lv_btn_create(list);
         lv_obj_set_size(btn, LV_PCT(100), 34);
-        lv_obj_set_style_bg_color(btn, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
         lv_obj_set_style_bg_color(btn, UI_ACCENT_PURPLE, LV_STATE_PRESSED);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_hor(btn, 8, 0);
@@ -174,7 +174,7 @@ static void show_html_picker(void)
         snprintf(display, sizeof(display), "%d. %s",
                  sd_files[i].number, sd_files[i].filename);
         lv_label_set_text(lbl, display);
-        lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
     }
@@ -259,7 +259,7 @@ static void show_ssid_input(void)
     lv_obj_t *cont = lv_obj_create(scr);
     lv_obj_set_size(cont, 300, 160);
     lv_obj_center(cont);
-    lv_obj_set_style_bg_color(cont, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(cont, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(cont, 12, 0);
     lv_obj_set_style_border_width(cont, 0, 0);
@@ -272,7 +272,7 @@ static void show_ssid_input(void)
 
     lv_obj_t *lbl = lv_label_create(cont);
     lv_label_set_text(lbl, "Enter AP name:");
-    lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
 
     ssid_textarea = lv_textarea_create(cont);
@@ -281,7 +281,7 @@ static void show_ssid_input(void)
     lv_textarea_set_max_length(ssid_textarea, 32);
     lv_textarea_set_placeholder_text(ssid_textarea, "FreeWiFi");
     lv_obj_set_style_text_font(ssid_textarea, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_bg_color(ssid_textarea, lv_color_hex(0x222244), 0);
+    lv_obj_set_style_bg_color(ssid_textarea, ui_card_color(), 0);
     lv_obj_set_style_text_color(ssid_textarea, lv_color_white(), 0);
     lv_obj_set_style_border_color(ssid_textarea, UI_ACCENT_PURPLE, LV_STATE_FOCUSED);
 
@@ -289,7 +289,7 @@ static void show_ssid_input(void)
     char htxt[80];
     snprintf(htxt, sizeof(htxt), "HTML: %s", sd_files[selected_html].filename);
     lv_label_set_text(html_lbl, htxt);
-    lv_obj_set_style_text_color(html_lbl, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(html_lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(html_lbl, &lv_font_montserrat_10, 0);
 
     lv_obj_t *btn_row = lv_obj_create(cont);
@@ -304,7 +304,7 @@ static void show_ssid_input(void)
 
     lv_obj_t *cancel_btn = lv_btn_create(btn_row);
     lv_obj_set_size(cancel_btn, 100, 32);
-    lv_obj_set_style_bg_color(cancel_btn, UI_TEXT_DIM, 0);
+    lv_obj_set_style_bg_color(cancel_btn, ui_muted_color(), 0);
     lv_obj_set_style_radius(cancel_btn, 8, 0);
     lv_obj_add_event_cb(cancel_btn, on_ssid_cancel, LV_EVENT_CLICKED, NULL);
     lv_obj_t *c_lbl = lv_label_create(cancel_btn);
@@ -422,7 +422,7 @@ static void show_running_screen(void)
              sd_files[selected_html].filename);
     lv_obj_t *html_lbl = lv_label_create(info);
     lv_label_set_text(html_lbl, html_txt);
-    lv_obj_set_style_text_color(html_lbl, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(html_lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(html_lbl, &lv_font_montserrat_10, 0);
 
     portal_status_lbl = lv_label_create(info);
@@ -468,7 +468,7 @@ void show_portal_screen(void)
 
     lv_obj_t *lbl = lv_label_create(scr);
     lv_label_set_text(lbl, "Loading SD card files...");
-    lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 45);
 

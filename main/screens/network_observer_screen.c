@@ -400,7 +400,7 @@ static void show_deauth_popup(int net_idx, int cli_idx)
     popup_obj = lv_obj_create(scr);
     lv_obj_set_size(popup_obj, 290, 175);
     lv_obj_center(popup_obj);
-    lv_obj_set_style_bg_color(popup_obj, lv_color_hex(0x1A1A2A), 0);
+    lv_obj_set_style_bg_color(popup_obj, ui_card_color(), 0);
     lv_obj_set_style_border_color(popup_obj, UI_ACCENT_RED, 0);
     lv_obj_set_style_border_width(popup_obj, 2, 0);
     lv_obj_set_style_radius(popup_obj, 12, 0);
@@ -426,7 +426,7 @@ static void show_deauth_popup(int net_idx, int cli_idx)
     lv_obj_t *x_btn = lv_btn_create(hdr);
     lv_obj_set_size(x_btn, 28, 24);
     lv_obj_align(x_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-    lv_obj_set_style_bg_color(x_btn, lv_color_hex(0x444444), 0);
+    lv_obj_set_style_bg_color(x_btn, ui_muted_color(), 0);
     lv_obj_set_style_radius(x_btn, 6, 0);
     lv_obj_add_event_cb(x_btn, deauth_btn_cb, LV_EVENT_CLICKED, (void*)(intptr_t)1);
     lv_obj_t *x_lbl = lv_label_create(x_btn);
@@ -440,7 +440,7 @@ static void show_deauth_popup(int net_idx, int cli_idx)
     char t1[64];
     snprintf(t1, sizeof(t1), "Net: %s  CH%d", ssid_d, net->channel);
     lv_label_set_text(lbl1, t1);
-    lv_obj_set_style_text_color(lbl1, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(lbl1, ui_text_color(), 0);
     lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_12, 0);
 
     lv_obj_t *lbl2 = lv_label_create(popup_obj);
@@ -455,7 +455,7 @@ static void show_deauth_popup(int net_idx, int cli_idx)
         char t3[48];
         snprintf(t3, sizeof(t3), "BSSID: %s", net->bssid);
         lv_label_set_text(lbl3, t3);
-        lv_obj_set_style_text_color(lbl3, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl3, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_10, 0);
     }
 
@@ -522,7 +522,7 @@ static void show_network_popup(int net_idx)
     popup_obj = lv_obj_create(scr);
     lv_obj_set_size(popup_obj, 300, 210);
     lv_obj_center(popup_obj);
-    lv_obj_set_style_bg_color(popup_obj, lv_color_hex(0x1A2A2A), 0);
+    lv_obj_set_style_bg_color(popup_obj, ui_card_color(), 0);
     lv_obj_set_style_border_color(popup_obj, UI_ACCENT_TEAL, 0);
     lv_obj_set_style_border_width(popup_obj, 2, 0);
     lv_obj_set_style_radius(popup_obj, 12, 0);
@@ -561,14 +561,14 @@ static void show_network_popup(int net_idx)
     char i1[64];
     snprintf(i1, sizeof(i1), "BSSID: %s", net->bssid);
     lv_label_set_text(info1, i1);
-    lv_obj_set_style_text_color(info1, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(info1, ui_muted_color(), 0);
     lv_obj_set_style_text_font(info1, &lv_font_montserrat_10, 0);
 
     lv_obj_t *info2 = lv_label_create(popup_obj);
     char i2[64];
     snprintf(i2, sizeof(i2), "CH%d | %s | %ddBm | %s", net->channel, net->band, net->rssi, net->security);
     lv_label_set_text(info2, i2);
-    lv_obj_set_style_text_color(info2, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(info2, ui_muted_color(), 0);
     lv_obj_set_style_text_font(info2, &lv_font_montserrat_10, 0);
 
     lv_obj_t *cl_hdr = lv_label_create(popup_obj);
@@ -581,7 +581,7 @@ static void show_network_popup(int net_idx)
     /* scrollable clients */
     net_popup_clients = lv_obj_create(popup_obj);
     lv_obj_set_size(net_popup_clients, LV_PCT(100), 80);
-    lv_obj_set_style_bg_color(net_popup_clients, lv_color_hex(0x0A1A1A), 0);
+    lv_obj_set_style_bg_color(net_popup_clients, ui_bg_color(), 0);
     lv_obj_set_style_border_width(net_popup_clients, 0, 0);
     lv_obj_set_style_radius(net_popup_clients, 6, 0);
     lv_obj_set_style_pad_all(net_popup_clients, 4, 0);
@@ -591,13 +591,13 @@ static void show_network_popup(int net_idx)
     if (net->client_count == 0) {
         lv_obj_t *nc = lv_label_create(net_popup_clients);
         lv_label_set_text(nc, "No clients yet...");
-        lv_obj_set_style_text_color(nc, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(nc, ui_muted_color(), 0);
         lv_obj_set_style_text_font(nc, &lv_font_montserrat_10, 0);
     } else {
         for (int j = 0; j < net->client_count; j++) {
             lv_obj_t *cb = lv_btn_create(net_popup_clients);
             lv_obj_set_size(cb, LV_PCT(100), 22);
-            lv_obj_set_style_bg_color(cb, lv_color_hex(0x0A1A1A), 0);
+            lv_obj_set_style_bg_color(cb, ui_bg_color(), 0);
             lv_obj_set_style_bg_color(cb, UI_ACCENT_RED, LV_STATE_PRESSED);
             lv_obj_set_style_radius(cb, 4, 0);
             lv_obj_set_style_pad_hor(cb, 4, 0);
@@ -605,7 +605,7 @@ static void show_network_popup(int net_idx)
                                 (void*)(intptr_t)j);
             lv_obj_t *ml = lv_label_create(cb);
             lv_label_set_text(ml, net->clients[j]);
-            lv_obj_set_style_text_color(ml, UI_TEXT_COLOR, 0);
+            lv_obj_set_style_text_color(ml, ui_text_color(), 0);
             lv_obj_set_style_text_font(ml, &lv_font_montserrat_10, 0);
             lv_obj_align(ml, LV_ALIGN_LEFT_MID, 0, 0);
         }
@@ -671,7 +671,7 @@ static void show_main_view(void)
     for (int i = 0; i < obs_net_count; i++) total_cli += obs_nets[i].client_count;
     snprintf(st, sizeof(st), "%d networks, %d clients", obs_net_count, total_cli);
     lv_label_set_text(status_label, st);
-    lv_obj_set_style_text_color(status_label, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(status_label, ui_muted_color(), 0);
     lv_obj_set_style_text_font(status_label, &lv_font_montserrat_10, 0);
     lv_obj_set_pos(status_label, 8, 38);
 
@@ -688,7 +688,7 @@ static void show_main_view(void)
     if (obs_net_count == 0) {
         lv_obj_t *nl = lv_label_create(obs_list);
         lv_label_set_text(nl, "No networks found.\nWaiting for sniffer data...");
-        lv_obj_set_style_text_color(nl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(nl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0);
     }
 
@@ -698,7 +698,7 @@ static void show_main_view(void)
         /* network row */
         lv_obj_t *nr = lv_btn_create(obs_list);
         lv_obj_set_size(nr, LV_PCT(100), 26);
-        lv_obj_set_style_bg_color(nr, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(nr, ui_card_color(), 0);
         lv_obj_set_style_bg_color(nr, UI_ACCENT_TEAL, LV_STATE_PRESSED);
         lv_obj_set_style_radius(nr, 4, 0);
         lv_obj_set_style_pad_hor(nr, 6, 0);
@@ -720,7 +720,7 @@ static void show_main_view(void)
         for (int j = 0; j < net->client_count; j++) {
             lv_obj_t *cr = lv_btn_create(obs_list);
             lv_obj_set_size(cr, LV_PCT(100), 20);
-            lv_obj_set_style_bg_color(cr, lv_color_hex(0x111122), 0);
+            lv_obj_set_style_bg_color(cr, ui_card_color(), 0);
             lv_obj_set_style_bg_color(cr, UI_ACCENT_RED, LV_STATE_PRESSED);
             lv_obj_set_style_radius(cr, 2, 0);
             lv_obj_set_style_pad_hor(cr, 16, 0);
@@ -729,7 +729,7 @@ static void show_main_view(void)
 
             lv_obj_t *cl = lv_label_create(cr);
             lv_label_set_text(cl, net->clients[j]);
-            lv_obj_set_style_text_color(cl, UI_TEXT_DIM, 0);
+            lv_obj_set_style_text_color(cl, ui_muted_color(), 0);
             lv_obj_set_style_text_font(cl, &lv_font_montserrat_10, 0);
             lv_obj_align(cl, LV_ALIGN_LEFT_MID, 0, 0);
         }
@@ -739,7 +739,7 @@ static void show_main_view(void)
     lv_obj_t *bar = lv_obj_create(scr);
     lv_obj_set_size(bar, LV_PCT(100), 38);
     lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(bar, UI_BAR_COLOR, 0);
+    lv_obj_set_style_bg_color(bar, ui_panel_color(), 0);
     lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
     lv_obj_set_style_radius(bar, 0, 0);
@@ -807,7 +807,7 @@ static void rebuild_list_content(void)
     if (obs_net_count == 0) {
         lv_obj_t *nl = lv_label_create(obs_list);
         lv_label_set_text(nl, "No networks found.\nWaiting for sniffer data...");
-        lv_obj_set_style_text_color(nl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(nl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0);
     }
 
@@ -816,7 +816,7 @@ static void rebuild_list_content(void)
 
         lv_obj_t *nr = lv_btn_create(obs_list);
         lv_obj_set_size(nr, LV_PCT(100), 26);
-        lv_obj_set_style_bg_color(nr, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(nr, ui_card_color(), 0);
         lv_obj_set_style_bg_color(nr, UI_ACCENT_TEAL, LV_STATE_PRESSED);
         lv_obj_set_style_radius(nr, 4, 0);
         lv_obj_set_style_pad_hor(nr, 6, 0);
@@ -837,7 +837,7 @@ static void rebuild_list_content(void)
         for (int j = 0; j < net->client_count; j++) {
             lv_obj_t *cr = lv_btn_create(obs_list);
             lv_obj_set_size(cr, LV_PCT(100), 20);
-            lv_obj_set_style_bg_color(cr, lv_color_hex(0x111122), 0);
+            lv_obj_set_style_bg_color(cr, ui_card_color(), 0);
             lv_obj_set_style_bg_color(cr, UI_ACCENT_RED, LV_STATE_PRESSED);
             lv_obj_set_style_radius(cr, 2, 0);
             lv_obj_set_style_pad_hor(cr, 16, 0);
@@ -846,7 +846,7 @@ static void rebuild_list_content(void)
 
             lv_obj_t *cl = lv_label_create(cr);
             lv_label_set_text(cl, net->clients[j]);
-            lv_obj_set_style_text_color(cl, UI_TEXT_DIM, 0);
+            lv_obj_set_style_text_color(cl, ui_muted_color(), 0);
             lv_obj_set_style_text_font(cl, &lv_font_montserrat_10, 0);
             lv_obj_align(cl, LV_ALIGN_LEFT_MID, 0, 0);
         }
@@ -937,7 +937,7 @@ static void on_karma_btn(lv_event_t *e)
         lv_obj_set_y(sp, 90);
         lv_obj_t *lb = lv_label_create(scr);
         lv_label_set_text(lb, "Loading probes...");
-        lv_obj_set_style_text_color(lb, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lb, ui_text_color(), 0);
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
         lv_obj_align(lb, LV_ALIGN_CENTER, 0, 45);
     }
@@ -977,7 +977,7 @@ static void show_probe_picker(void)
     if (probe_count == 0) {
         lv_obj_t *lb = lv_label_create(scr);
         lv_label_set_text(lb, "No probes captured.\nLet sniffer run longer.");
-        lv_obj_set_style_text_color(lb, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lb, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
         lv_obj_set_width(lb, LV_PCT(90));
         lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
@@ -997,7 +997,7 @@ static void show_probe_picker(void)
     for (int i = 0; i < probe_count; i++) {
         lv_obj_t *btn = lv_btn_create(list);
         lv_obj_set_size(btn, LV_PCT(100), 30);
-        lv_obj_set_style_bg_color(btn, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
         lv_obj_set_style_bg_color(btn, UI_ACCENT_ORANGE, LV_STATE_PRESSED);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_hor(btn, 8, 0);
@@ -1010,7 +1010,7 @@ static void show_probe_picker(void)
         lv_label_set_text(lb, d);
         lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
         lv_obj_set_width(lb, 270);
-        lv_obj_set_style_text_color(lb, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lb, ui_text_color(), 0);
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_12, 0);
         lv_obj_align(lb, LV_ALIGN_LEFT_MID, 0, 0);
     }
@@ -1076,7 +1076,7 @@ static void on_probe_selected(lv_event_t *e)
         lv_obj_set_y(sp, 90);
         lv_obj_t *lb = lv_label_create(scr);
         lv_label_set_text(lb, "Loading HTML files...");
-        lv_obj_set_style_text_color(lb, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lb, ui_text_color(), 0);
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
         lv_obj_align(lb, LV_ALIGN_CENTER, 0, 45);
     }
@@ -1132,7 +1132,7 @@ static void show_html_picker(void)
     if (sd_file_count == 0) {
         lv_obj_t *lb = lv_label_create(scr);
         lv_label_set_text(lb, "No HTML files on SD.");
-        lv_obj_set_style_text_color(lb, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lb, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
         lv_obj_center(lb);
         return;
@@ -1150,7 +1150,7 @@ static void show_html_picker(void)
     for (int i = 0; i < sd_file_count; i++) {
         lv_obj_t *btn = lv_btn_create(list);
         lv_obj_set_size(btn, LV_PCT(100), 30);
-        lv_obj_set_style_bg_color(btn, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
         lv_obj_set_style_bg_color(btn, UI_ACCENT_ORANGE, LV_STATE_PRESSED);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_hor(btn, 8, 0);
@@ -1163,7 +1163,7 @@ static void show_html_picker(void)
         lv_label_set_text(lb, d);
         lv_label_set_long_mode(lb, LV_LABEL_LONG_DOT);
         lv_obj_set_width(lb, 270);
-        lv_obj_set_style_text_color(lb, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lb, ui_text_color(), 0);
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_12, 0);
         lv_obj_align(lb, LV_ALIGN_LEFT_MID, 0, 0);
     }
@@ -1321,7 +1321,7 @@ void show_network_observer_screen(void)
 
     lv_obj_t *lb = lv_label_create(scr);
     lv_label_set_text(lb, "Scanning networks...");
-    lv_obj_set_style_text_color(lb, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(lb, ui_text_color(), 0);
     lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
     lv_obj_align(lb, LV_ALIGN_CENTER, 0, 50);
 

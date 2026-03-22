@@ -29,7 +29,7 @@ void show_sae_overflow_screen(void)
     lv_obj_t *center = lv_obj_create(scr);
     lv_obj_set_size(center, LV_PCT(80), LV_SIZE_CONTENT);
     lv_obj_center(center);
-    lv_obj_set_style_bg_color(center, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(center, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(center, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(center, 12, 0);
     lv_obj_set_style_border_color(center, UI_ACCENT_ORANGE, 0);
@@ -53,7 +53,7 @@ void show_sae_overflow_screen(void)
 
     lv_obj_t *status = lv_label_create(center);
     lv_label_set_text(status, "Running...");
-    lv_obj_set_style_text_color(status, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(status, ui_text_color(), 0);
     lv_obj_set_style_text_font(status, &lv_font_montserrat_14, 0);
 
     lv_obj_t *btn = lv_btn_create(scr);

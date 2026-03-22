@@ -46,7 +46,7 @@ static void show_blackout_active(void)
     blackout_overlay = lv_obj_create(scr);
     lv_obj_set_size(blackout_overlay, 280, 180);
     lv_obj_center(blackout_overlay);
-    lv_obj_set_style_bg_color(blackout_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(blackout_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(blackout_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(blackout_overlay, 12, 0);
     lv_obj_set_style_border_color(blackout_overlay, UI_ACCENT_RED, 0);
@@ -70,7 +70,7 @@ static void show_blackout_active(void)
 
     lv_obj_t *desc = lv_label_create(blackout_overlay);
     lv_label_set_text(desc, "Deauthing all networks...");
-    lv_obj_set_style_text_color(desc, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(desc, ui_text_color(), 0);
     lv_obj_set_style_text_font(desc, &lv_font_montserrat_12, 0);
 
     lv_obj_t *btn = lv_btn_create(blackout_overlay);
@@ -103,7 +103,7 @@ static void show_blackout_confirm(void)
     blackout_overlay = lv_obj_create(scr);
     lv_obj_set_size(blackout_overlay, 280, 180);
     lv_obj_center(blackout_overlay);
-    lv_obj_set_style_bg_color(blackout_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(blackout_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(blackout_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(blackout_overlay, 12, 0);
     lv_obj_set_style_border_color(blackout_overlay, UI_ACCENT_RED, 0);
@@ -127,7 +127,7 @@ static void show_blackout_confirm(void)
 
     lv_obj_t *desc = lv_label_create(blackout_overlay);
     lv_label_set_text(desc, "Deauth all networks\naround you?");
-    lv_obj_set_style_text_color(desc, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(desc, ui_text_color(), 0);
     lv_obj_set_style_text_font(desc, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(desc, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -143,7 +143,7 @@ static void show_blackout_confirm(void)
 
     lv_obj_t *no_btn = lv_btn_create(btn_row);
     lv_obj_set_size(no_btn, 100, 32);
-    lv_obj_set_style_bg_color(no_btn, UI_TEXT_DIM, 0);
+    lv_obj_set_style_bg_color(no_btn, ui_muted_color(), 0);
     lv_obj_set_style_radius(no_btn, 8, 0);
     lv_obj_add_event_cb(no_btn, blackout_no_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *no_lbl = lv_label_create(no_btn);
@@ -199,7 +199,7 @@ static void show_snifferdog_active(void)
     snifferdog_overlay = lv_obj_create(scr);
     lv_obj_set_size(snifferdog_overlay, 280, 180);
     lv_obj_center(snifferdog_overlay);
-    lv_obj_set_style_bg_color(snifferdog_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(snifferdog_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(snifferdog_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(snifferdog_overlay, 12, 0);
     lv_obj_set_style_border_color(snifferdog_overlay, UI_ACCENT_CYAN, 0);
@@ -223,7 +223,7 @@ static void show_snifferdog_active(void)
 
     lv_obj_t *desc = lv_label_create(snifferdog_overlay);
     lv_label_set_text(desc, "Deauthing all clients...");
-    lv_obj_set_style_text_color(desc, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(desc, ui_text_color(), 0);
     lv_obj_set_style_text_font(desc, &lv_font_montserrat_12, 0);
 
     lv_obj_t *btn = lv_btn_create(snifferdog_overlay);
@@ -256,7 +256,7 @@ static void show_snifferdog_confirm(void)
     snifferdog_overlay = lv_obj_create(scr);
     lv_obj_set_size(snifferdog_overlay, 280, 180);
     lv_obj_center(snifferdog_overlay);
-    lv_obj_set_style_bg_color(snifferdog_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(snifferdog_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(snifferdog_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(snifferdog_overlay, 12, 0);
     lv_obj_set_style_border_color(snifferdog_overlay, UI_ACCENT_CYAN, 0);
@@ -280,7 +280,7 @@ static void show_snifferdog_confirm(void)
 
     lv_obj_t *desc = lv_label_create(snifferdog_overlay);
     lv_label_set_text(desc, "Deauth all clients\naround you?");
-    lv_obj_set_style_text_color(desc, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(desc, ui_text_color(), 0);
     lv_obj_set_style_text_font(desc, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(desc, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -296,7 +296,7 @@ static void show_snifferdog_confirm(void)
 
     lv_obj_t *no_btn = lv_btn_create(btn_row);
     lv_obj_set_size(no_btn, 100, 32);
-    lv_obj_set_style_bg_color(no_btn, UI_TEXT_DIM, 0);
+    lv_obj_set_style_bg_color(no_btn, ui_muted_color(), 0);
     lv_obj_set_style_radius(no_btn, 8, 0);
     lv_obj_add_event_cb(no_btn, snifferdog_no_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *no_lbl = lv_label_create(no_btn);
@@ -386,9 +386,9 @@ void show_global_attacks_screen(void)
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_y(grid, 36);
 
-    ui_create_tile(grid, "Blackout",     UI_ACCENT_RED,    on_blackout,   NULL);
-    ui_create_tile(grid, "Handshaker",   UI_ACCENT_ORANGE, on_handshaker, NULL);
-    ui_create_tile(grid, "Portal",       UI_ACCENT_PURPLE, on_portal,     NULL);
-    ui_create_tile(grid, "Sniffer Dog",  UI_ACCENT_CYAN,   on_snifferdog, NULL);
-    ui_create_tile(grid, "Wardrive",     UI_ACCENT_TEAL,   on_wardrive,   NULL);
+    ui_create_tile(grid, LV_SYMBOL_POWER,    "Blackout",     UI_ACCENT_RED,    on_blackout,   NULL);
+    ui_create_tile(grid, LV_SYMBOL_REFRESH,  "Handshaker",   UI_ACCENT_ORANGE, on_handshaker, NULL);
+    ui_create_tile(grid, LV_SYMBOL_HOME,     "Portal",       UI_ACCENT_PURPLE, on_portal,     NULL);
+    ui_create_tile(grid, LV_SYMBOL_EYE_OPEN, "Sniffer Dog",  UI_ACCENT_CYAN,   on_snifferdog, NULL);
+    ui_create_tile(grid, LV_SYMBOL_GPS,      "Wardrive",     UI_ACCENT_TEAL,   on_wardrive,   NULL);
 }

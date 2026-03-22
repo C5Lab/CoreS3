@@ -219,7 +219,7 @@ static void on_probe_selected(lv_event_t *e)
 
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "Loading HTML files...");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 45);
     }
@@ -236,7 +236,7 @@ static void show_probe_picker(void)
     if (probe_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "No probe requests captured.\nLet sniffer run longer.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_set_width(lbl, LV_PCT(90));
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
@@ -256,7 +256,7 @@ static void show_probe_picker(void)
     for (int i = 0; i < probe_count; i++) {
         lv_obj_t *btn = lv_btn_create(list);
         lv_obj_set_size(btn, LV_PCT(100), 34);
-        lv_obj_set_style_bg_color(btn, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
         lv_obj_set_style_bg_color(btn, UI_ACCENT_ORANGE, LV_STATE_PRESSED);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_hor(btn, 8, 0);
@@ -268,7 +268,7 @@ static void show_probe_picker(void)
         snprintf(display, sizeof(display), "%d. %s",
                  probes[i].index, probes[i].ssid);
         lv_label_set_text(lbl, display);
-        lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
     }
@@ -321,7 +321,7 @@ static void show_html_picker(void)
     if (sd_file_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "No HTML files found on SD card.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(lbl);
         return;
@@ -339,7 +339,7 @@ static void show_html_picker(void)
     for (int i = 0; i < sd_file_count; i++) {
         lv_obj_t *btn = lv_btn_create(list);
         lv_obj_set_size(btn, LV_PCT(100), 34);
-        lv_obj_set_style_bg_color(btn, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
         lv_obj_set_style_bg_color(btn, UI_ACCENT_ORANGE, LV_STATE_PRESSED);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_hor(btn, 8, 0);
@@ -351,7 +351,7 @@ static void show_html_picker(void)
         snprintf(display, sizeof(display), "%d. %s",
                  sd_files[i].number, sd_files[i].filename);
         lv_label_set_text(lbl, display);
-        lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
         lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
     }
@@ -478,7 +478,7 @@ void show_karma_screen(void)
 
     lv_obj_t *lbl = lv_label_create(scr);
     lv_label_set_text(lbl, "Loading probe requests...");
-    lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 45);
 

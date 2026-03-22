@@ -57,7 +57,8 @@ static void on_deauth_detector(lv_event_t *e)
 static void on_settings(lv_event_t *e)
 {
     (void)e;
-    ESP_LOGI(TAG, "Settings (placeholder)");
+    ESP_LOGI(TAG, "Settings");
+    show_settings_screen();
 }
 
 /* Build the home screen ---------------------------------------------- */
@@ -84,11 +85,11 @@ void show_home_screen(void)
     lv_obj_align_to(grid, lv_obj_get_child(scr, 0), LV_ALIGN_OUT_BOTTOM_MID, 0, 0);
     lv_obj_set_y(grid, 36);
 
-    ui_create_tile(grid, "WiFi Scan\n& Attack",        UI_ACCENT_BLUE,           on_wifi_scan,       NULL);
-    ui_create_tile(grid, "Global WiFi\nAttacks",      UI_ACCENT_RED,            on_global_wifi,     NULL);
-    ui_create_tile(grid, "Network Observer\n& Karma", UI_ACCENT_ORANGE,         on_wifi_sniff,      NULL);
-    ui_create_tile(grid, "Compromised\nData",         UI_ACCENT_GREEN,          on_compromised,     NULL);
-    ui_create_tile(grid, "Bluetooth",                 UI_ACCENT_PURPLE,         on_bluetooth,       NULL);
-    ui_create_tile(grid, "Deauth\nDetector",          UI_ACCENT_CYAN,           on_deauth_detector, NULL);
-    ui_create_tile(grid, "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
+    ui_create_tile(grid, LV_SYMBOL_WIFI,      "WiFi Scan\n& Attack",        UI_ACCENT_BLUE,           on_wifi_scan,       NULL);
+    ui_create_tile(grid, LV_SYMBOL_WARNING,   "Global WiFi\nAttacks",      UI_ACCENT_RED,            on_global_wifi,     NULL);
+    ui_create_tile(grid, LV_SYMBOL_EYE_OPEN,  "Network Observer\n& Karma", UI_ACCENT_ORANGE,         on_wifi_sniff,      NULL);
+    ui_create_tile(grid, LV_SYMBOL_DOWNLOAD,  "Compromised\nData",         UI_ACCENT_GREEN,          on_compromised,     NULL);
+    ui_create_tile(grid, LV_SYMBOL_BLUETOOTH, "Bluetooth",                 UI_ACCENT_PURPLE,         on_bluetooth,       NULL);
+    ui_create_tile(grid, LV_SYMBOL_CHARGE,    "Deauth\nDetector",          UI_ACCENT_CYAN,           on_deauth_detector, NULL);
+    ui_create_tile(grid, LV_SYMBOL_SETTINGS,  "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
 }

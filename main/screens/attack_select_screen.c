@@ -59,7 +59,7 @@ static void on_deauth(lv_event_t *e)
     deauth_overlay = lv_obj_create(scr);
     lv_obj_set_size(deauth_overlay, 300, 220);
     lv_obj_center(deauth_overlay);
-    lv_obj_set_style_bg_color(deauth_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(deauth_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(deauth_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(deauth_overlay, 12, 0);
     lv_obj_set_style_border_color(deauth_overlay, UI_ACCENT_RED, 0);
@@ -92,7 +92,7 @@ static void on_deauth(lv_event_t *e)
                  net->bssid, net->channel);
         lv_obj_t *lbl = lv_label_create(list);
         lv_label_set_text(lbl, line);
-        lv_obj_set_style_text_color(lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
     }
 
@@ -175,9 +175,9 @@ void show_attack_select_screen(void)
     lv_obj_set_y(grid, 36);
     lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
-    ui_create_tile(grid, "Deauth",        UI_ACCENT_RED,    on_deauth,       NULL);
-    ui_create_tile(grid, "Evil Twin",     UI_ACCENT_PURPLE, on_evil_twin,    NULL);
-    ui_create_tile(grid, "SAE\nOverflow", UI_ACCENT_ORANGE, on_sae_overflow, NULL);
-    ui_create_tile(grid, "Handshaker",    UI_ACCENT_CYAN,   on_handshaker,   NULL);
-    ui_create_tile(grid, "Sniffer",       UI_ACCENT_GREEN,  on_sniffer,      NULL);
+    ui_create_tile(grid, LV_SYMBOL_WARNING,  "Deauth",        UI_ACCENT_RED,    on_deauth,       NULL);
+    ui_create_tile(grid, LV_SYMBOL_CLOSE,    "Evil Twin",     UI_ACCENT_PURPLE, on_evil_twin,    NULL);
+    ui_create_tile(grid, LV_SYMBOL_CHARGE,   "SAE\nOverflow", UI_ACCENT_ORANGE, on_sae_overflow, NULL);
+    ui_create_tile(grid, LV_SYMBOL_REFRESH,  "Handshaker",    UI_ACCENT_CYAN,   on_handshaker,   NULL);
+    ui_create_tile(grid, LV_SYMBOL_EYE_OPEN, "Sniffer",       UI_ACCENT_GREEN,  on_sniffer,      NULL);
 }

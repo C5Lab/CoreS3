@@ -122,7 +122,7 @@ static void build_network_list(void)
     char buf[48];
     snprintf(buf, sizeof(buf), "Found %d networks", network_count);
     lv_label_set_text(hdr, buf);
-    lv_obj_set_style_text_color(hdr, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(hdr, ui_muted_color(), 0);
     lv_obj_set_style_text_font(hdr, &lv_font_montserrat_12, 0);
     lv_obj_set_pos(hdr, 8, 40);
 
@@ -143,7 +143,7 @@ static void build_network_list(void)
 
         lv_obj_t *row = lv_obj_create(list_container);
         lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(row, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(row, ui_card_color(), 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(row, 6, 0);
         lv_obj_set_style_border_width(row, 0, 0);
@@ -172,7 +172,7 @@ static void build_network_list(void)
         const char *name = net->ssid[0] ? net->ssid : "(hidden)";
         lv_obj_t *name_lbl = lv_label_create(col);
         lv_label_set_text(name_lbl, name);
-        lv_obj_set_style_text_color(name_lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(name_lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
         lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
         lv_obj_set_width(name_lbl, 200);
@@ -182,7 +182,7 @@ static void build_network_list(void)
                  net->rssi, net->channel, net->band, net->security);
         lv_obj_t *info_lbl = lv_label_create(col);
         lv_label_set_text(info_lbl, info);
-        lv_obj_set_style_text_color(info_lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(info_lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(info_lbl, &lv_font_montserrat_10, 0);
     }
 
@@ -190,7 +190,7 @@ static void build_network_list(void)
     lv_obj_t *btn_bar = lv_obj_create(scr);
     lv_obj_set_size(btn_bar, LV_PCT(100), 38);
     lv_obj_align(btn_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(btn_bar, UI_BAR_COLOR, 0);
+    lv_obj_set_style_bg_color(btn_bar, ui_panel_color(), 0);
     lv_obj_set_style_bg_opa(btn_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(btn_bar, 0, 0);
     lv_obj_set_style_border_width(btn_bar, 0, 0);
@@ -239,7 +239,7 @@ static void on_scan_complete(const char **lines, int line_count)
         lv_label_set_text(msg, line_count == 0
             ? "No response from board.\nCheck UART connection."
             : "No networks parsed.\nUnexpected data format.");
-        lv_obj_set_style_text_color(msg, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(msg, ui_text_color(), 0);
         lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(msg, LV_ALIGN_CENTER, 0, 0);
@@ -261,7 +261,7 @@ void show_wifi_scan_screen(void)
 
     scan_status_lbl = lv_label_create(scr);
     lv_label_set_text(scan_status_lbl, "Scanning networks...");
-    lv_obj_set_style_text_color(scan_status_lbl, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(scan_status_lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(scan_status_lbl, &lv_font_montserrat_14, 0);
     lv_obj_align(scan_status_lbl, LV_ALIGN_CENTER, 0, 50);
 

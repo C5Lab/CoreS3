@@ -204,7 +204,7 @@ static void show_clients_screen(void)
     if (obs_network_count == 0) {
         lv_obj_t *lbl = lv_label_create(list);
         lv_label_set_text(lbl, "No clients found yet.\nLet sniffer run longer.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         return;
     }
@@ -308,7 +308,7 @@ static void show_sniffer_main(void)
     /* selected networks list */
     lv_obj_t *hdr = lv_label_create(content);
     lv_label_set_text(hdr, "Sniffing:");
-    lv_obj_set_style_text_color(hdr, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(hdr, ui_muted_color(), 0);
     lv_obj_set_style_text_font(hdr, &lv_font_montserrat_12, 0);
 
     for (int i = 0; i < sel_count && i < 6; i++) {
@@ -327,7 +327,7 @@ static void show_sniffer_main(void)
         char mtxt[24];
         snprintf(mtxt, sizeof(mtxt), "  +%d more...", sel_count - 6);
         lv_label_set_text(more, mtxt);
-        lv_obj_set_style_text_color(more, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(more, ui_muted_color(), 0);
         lv_obj_set_style_text_font(more, &lv_font_montserrat_10, 0);
     }
 
@@ -336,7 +336,7 @@ static void show_sniffer_main(void)
     char pkt_txt[48];
     snprintf(pkt_txt, sizeof(pkt_txt), "Packets: %d", pkt_count);
     lv_label_set_text(pkt_label, pkt_txt);
-    lv_obj_set_style_text_color(pkt_label, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(pkt_label, ui_text_color(), 0);
     lv_obj_set_style_text_font(pkt_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_pad_top(pkt_label, 8, 0);
 
@@ -344,7 +344,7 @@ static void show_sniffer_main(void)
     lv_obj_t *btn_row = lv_obj_create(scr);
     lv_obj_set_size(btn_row, LV_PCT(100), 40);
     lv_obj_align(btn_row, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_style_bg_color(btn_row, UI_BAR_COLOR, 0);
+    lv_obj_set_style_bg_color(btn_row, ui_panel_color(), 0);
     lv_obj_set_style_bg_opa(btn_row, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(btn_row, 0, 0);
     lv_obj_set_style_radius(btn_row, 0, 0);

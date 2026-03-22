@@ -60,7 +60,7 @@ static void show_gps_overlay(void)
     gps_overlay = lv_obj_create(scr);
     lv_obj_set_size(gps_overlay, 240, 100);
     lv_obj_center(gps_overlay);
-    lv_obj_set_style_bg_color(gps_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(gps_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(gps_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(gps_overlay, 12, 0);
     lv_obj_set_style_border_color(gps_overlay, UI_ACCENT_TEAL, 0);
@@ -354,7 +354,7 @@ void show_wardrive_screen(void)
 
     wd_count_lbl = lv_label_create(status_row);
     lv_label_set_text(wd_count_lbl, "Networks: 0");
-    lv_obj_set_style_text_color(wd_count_lbl, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(wd_count_lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(wd_count_lbl, &lv_font_montserrat_12, 0);
 
     /* button row */
@@ -397,18 +397,18 @@ void show_wardrive_screen(void)
     wd_table = lv_table_create(scr);
     lv_obj_set_size(wd_table, 310, 135);
     lv_obj_set_pos(wd_table, 5, 98);
-    lv_obj_set_style_bg_color(wd_table, lv_color_hex(0x111122), 0);
+    lv_obj_set_style_bg_color(wd_table, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(wd_table, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(wd_table, 6, 0);
     lv_obj_set_style_border_width(wd_table, 1, 0);
-    lv_obj_set_style_border_color(wd_table, UI_TEXT_DIM, 0);
+    lv_obj_set_style_border_color(wd_table, ui_muted_color(), 0);
     lv_obj_set_style_pad_all(wd_table, 2, 0);
     lv_obj_set_style_text_font(wd_table, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(wd_table, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(wd_table, ui_text_color(), 0);
 
     /* header styling */
-    lv_obj_set_style_bg_color(wd_table, UI_BAR_COLOR, LV_PART_ITEMS | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_color(wd_table, UI_TEXT_COLOR, LV_PART_ITEMS | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(wd_table, ui_panel_color(), LV_PART_ITEMS | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(wd_table, ui_text_color(), LV_PART_ITEMS | LV_STATE_DEFAULT);
     lv_obj_set_style_border_width(wd_table, 0, LV_PART_ITEMS);
     lv_obj_set_style_pad_ver(wd_table, 2, LV_PART_ITEMS);
     lv_obj_set_style_pad_hor(wd_table, 4, LV_PART_ITEMS);

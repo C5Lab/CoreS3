@@ -216,9 +216,7 @@ static esp_err_t ll_cam_dma_init(cam_obj_t *cam)
     esp_err_t ret = gdma_new_channel(&rx_alloc_config, &cam->dma_channel_handle);
 #endif
 #else
-    gdma_channel_alloc_config_t rx_alloc_config = {
-        .direction = GDMA_CHANNEL_DIRECTION_RX,
-    };
+    gdma_channel_alloc_config_t rx_alloc_config = {0};
     esp_err_t ret = gdma_new_ahb_channel(&rx_alloc_config, &cam->dma_channel_handle);
 #endif
     if (ret != ESP_OK) {

@@ -155,7 +155,7 @@ static void add_row_to_list(const deauth_entry_t *ent)
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(row, 2, 0);
     lv_obj_set_style_pad_gap(row, 2, 0);
-    lv_obj_set_style_bg_color(row, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(row, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(row, 0, 0);
     lv_obj_set_style_radius(row, 4, 0);
@@ -181,7 +181,7 @@ static void add_row_to_list(const deauth_entry_t *ent)
     lv_obj_t *lbl_ap = lv_label_create(row);
     lv_obj_set_width(lbl_ap, COL_AP_W);
     lv_obj_set_style_text_font(lbl_ap, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_ap, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(lbl_ap, ui_text_color(), 0);
     lv_label_set_long_mode(lbl_ap, LV_LABEL_LONG_CLIP);
     lv_label_set_text(lbl_ap, ent->ap_name);
 
@@ -189,7 +189,7 @@ static void add_row_to_list(const deauth_entry_t *ent)
     lv_obj_t *lbl_bssid = lv_label_create(row);
     lv_obj_set_width(lbl_bssid, COL_BSSID_W);
     lv_obj_set_style_text_font(lbl_bssid, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(lbl_bssid, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(lbl_bssid, ui_muted_color(), 0);
     lv_label_set_long_mode(lbl_bssid, LV_LABEL_LONG_CLIP);
     lv_label_set_text(lbl_bssid, ent->bssid);
 }
@@ -325,7 +325,7 @@ void show_deauth_detector_screen(void)
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(hdr, 2, 0);
     lv_obj_set_style_pad_gap(hdr, 2, 0);
-    lv_obj_set_style_bg_color(hdr, UI_BAR_COLOR, 0);
+    lv_obj_set_style_bg_color(hdr, ui_panel_color(), 0);
     lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(hdr, 0, 0);
     lv_obj_set_y(hdr, 72);
@@ -340,7 +340,7 @@ void show_deauth_detector_screen(void)
         lv_obj_t *l = lv_label_create(hdr);
         lv_obj_set_width(l, cols[i].w);
         lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(l, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
         lv_label_set_text(l, cols[i].txt);
     }
 
@@ -351,7 +351,7 @@ void show_deauth_detector_screen(void)
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(s_list, 2, 0);
     lv_obj_set_style_pad_gap(s_list, 2, 0);
-    lv_obj_set_style_bg_color(s_list, UI_BG_COLOR, 0);
+    lv_obj_set_style_bg_color(s_list, ui_bg_color(), 0);
     lv_obj_set_style_bg_opa(s_list, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_AUTO);

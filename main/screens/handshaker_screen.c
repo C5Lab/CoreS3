@@ -166,18 +166,18 @@ static void show_active_screen(void)
     lv_obj_t *log_cont = lv_obj_create(scr);
     lv_obj_set_size(log_cont, 310, 130);
     lv_obj_set_pos(log_cont, 5, 58);
-    lv_obj_set_style_bg_color(log_cont, lv_color_hex(0x111122), 0);
+    lv_obj_set_style_bg_color(log_cont, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(log_cont, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(log_cont, 6, 0);
     lv_obj_set_style_border_width(log_cont, 1, 0);
-    lv_obj_set_style_border_color(log_cont, UI_TEXT_DIM, 0);
+    lv_obj_set_style_border_color(log_cont, ui_muted_color(), 0);
     lv_obj_set_style_pad_all(log_cont, 4, 0);
 
     log_label = lv_label_create(log_cont);
     lv_label_set_text(log_label, "Starting handshake capture...");
     lv_obj_set_width(log_label, 295);
     lv_label_set_long_mode(log_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_color(log_label, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(log_label, ui_text_color(), 0);
     lv_obj_set_style_text_font(log_label, &lv_font_montserrat_10, 0);
 
     /* stop button */
@@ -228,7 +228,7 @@ void show_handshaker_screen(void)
     confirm_overlay = lv_obj_create(scr);
     lv_obj_set_size(confirm_overlay, 280, 180);
     lv_obj_center(confirm_overlay);
-    lv_obj_set_style_bg_color(confirm_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(confirm_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(confirm_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(confirm_overlay, 12, 0);
     lv_obj_set_style_border_color(confirm_overlay, UI_ACCENT_ORANGE, 0);
@@ -252,7 +252,7 @@ void show_handshaker_screen(void)
 
     lv_obj_t *desc = lv_label_create(confirm_overlay);
     lv_label_set_text(desc, "Deauth all networks\nto grab handshakes?");
-    lv_obj_set_style_text_color(desc, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(desc, ui_text_color(), 0);
     lv_obj_set_style_text_font(desc, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(desc, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -268,7 +268,7 @@ void show_handshaker_screen(void)
 
     lv_obj_t *no_btn = lv_btn_create(btn_row);
     lv_obj_set_size(no_btn, 100, 32);
-    lv_obj_set_style_bg_color(no_btn, UI_TEXT_DIM, 0);
+    lv_obj_set_style_bg_color(no_btn, ui_muted_color(), 0);
     lv_obj_set_style_radius(no_btn, 8, 0);
     lv_obj_add_event_cb(no_btn, confirm_no_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *no_lbl = lv_label_create(no_btn);

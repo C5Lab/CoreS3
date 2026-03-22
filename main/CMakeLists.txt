@@ -31,5 +31,6 @@ idf_component_register(
         esp_timer
         nvs_flash
         esp_lvgl_port
+        esp_codec_dev
         m5stack_core_s3
 )

@@ -38,7 +38,7 @@ void show_keyboard_screen(keyboard_done_cb_t on_done)
     /* Prompt label */
     lv_obj_t *prompt = lv_label_create(scr);
     lv_label_set_text(prompt, "Type on CardKB, press Enter to continue:");
-    lv_obj_set_style_text_color(prompt, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(prompt, ui_muted_color(), 0);
     lv_obj_set_style_text_font(prompt, &lv_font_montserrat_14, 0);
     lv_obj_set_width(prompt, LV_PCT(90));
     lv_obj_set_style_text_align(prompt, LV_TEXT_ALIGN_CENTER, 0);
@@ -48,7 +48,7 @@ void show_keyboard_screen(keyboard_done_cb_t on_done)
     lv_obj_t *card = lv_obj_create(scr);
     lv_obj_set_size(card, LV_PCT(90), 90);
     lv_obj_align(card, LV_ALIGN_CENTER, 0, 10);
-    lv_obj_set_style_bg_color(card, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(card, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(card, 10, 0);
     lv_obj_set_style_border_color(card, UI_ACCENT_CYAN, 0);
@@ -67,7 +67,7 @@ void show_keyboard_screen(keyboard_done_cb_t on_done)
     /* Blinking cursor hint at bottom */
     lbl_cursor = lv_label_create(scr);
     lv_label_set_text(lbl_cursor, "Waiting for input...");
-    lv_obj_set_style_text_color(lbl_cursor, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(lbl_cursor, ui_muted_color(), 0);
     lv_obj_set_style_text_font(lbl_cursor, &lv_font_montserrat_12, 0);
     lv_obj_align(lbl_cursor, LV_ALIGN_BOTTOM_MID, 0, -10);
 

@@ -108,7 +108,7 @@ static void show_loading(const char *title, const char *msg)
 
     lv_obj_t *lbl = lv_label_create(center);
     lv_label_set_text(lbl, msg);
-    lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+    lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
 }
 
@@ -172,7 +172,7 @@ static void on_evil_item_clicked(lv_event_t *e)
     connect_overlay = lv_obj_create(scr);
     lv_obj_set_size(connect_overlay, 280, 140);
     lv_obj_center(connect_overlay);
-    lv_obj_set_style_bg_color(connect_overlay, UI_BG_CARD, 0);
+    lv_obj_set_style_bg_color(connect_overlay, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(connect_overlay, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(connect_overlay, 12, 0);
     lv_obj_set_style_border_color(connect_overlay, UI_ACCENT_BLUE, 0);
@@ -188,7 +188,7 @@ static void on_evil_item_clicked(lv_event_t *e)
     char title_txt[64];
     snprintf(title_txt, sizeof(title_txt), "Connecting to %s...", entry->ssid);
     lv_label_set_text(title, title_txt);
-    lv_obj_set_style_text_color(title, UI_TEXT_COLOR, 0);
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
 
@@ -199,7 +199,7 @@ static void on_evil_item_clicked(lv_event_t *e)
 
     lv_obj_t *btn = lv_btn_create(connect_overlay);
     lv_obj_set_size(btn, 100, 32);
-    lv_obj_set_style_bg_color(btn, UI_TEXT_DIM, 0);
+    lv_obj_set_style_bg_color(btn, ui_muted_color(), 0);
     lv_obj_set_style_radius(btn, 8, 0);
     lv_obj_add_event_cb(btn, close_connect_overlay, LV_EVENT_CLICKED, NULL);
     lv_obj_t *btn_lbl = lv_label_create(btn);
@@ -219,7 +219,7 @@ static void show_evil_pass_list(void)
     if (evil_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "No passwords captured.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(lbl);
         return;
@@ -237,7 +237,7 @@ static void show_evil_pass_list(void)
     for (int i = 0; i < evil_count; i++) {
         lv_obj_t *btn = lv_btn_create(list);
         lv_obj_set_size(btn, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(btn, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
         lv_obj_set_style_bg_color(btn, UI_ACCENT_GREEN, LV_STATE_PRESSED);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_all(btn, 6, 0);
@@ -255,7 +255,7 @@ static void show_evil_pass_list(void)
 
         lv_obj_t *pass_lbl = lv_label_create(btn);
         lv_label_set_text(pass_lbl, evil_entries[i].password);
-        lv_obj_set_style_text_color(pass_lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(pass_lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(pass_lbl, &lv_font_montserrat_12, 0);
         lv_obj_set_width(pass_lbl, LV_PCT(100));
         lv_label_set_long_mode(pass_lbl, LV_LABEL_LONG_DOT);
@@ -350,7 +350,7 @@ static void show_portal_data_list(void)
     if (portal_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "No portal data captured.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(lbl);
         return;
@@ -368,7 +368,7 @@ static void show_portal_data_list(void)
     for (int i = 0; i < portal_count; i++) {
         lv_obj_t *card = lv_obj_create(list);
         lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(card, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(card, ui_card_color(), 0);
         lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(card, 6, 0);
         lv_obj_set_style_border_width(card, 0, 0);
@@ -385,7 +385,7 @@ static void show_portal_data_list(void)
 
         lv_obj_t *fields_lbl = lv_label_create(card);
         lv_label_set_text(fields_lbl, portal_entries[i].fields);
-        lv_obj_set_style_text_color(fields_lbl, UI_TEXT_COLOR, 0);
+        lv_obj_set_style_text_color(fields_lbl, ui_text_color(), 0);
         lv_obj_set_style_text_font(fields_lbl, &lv_font_montserrat_10, 0);
         lv_obj_set_width(fields_lbl, LV_PCT(100));
         lv_label_set_long_mode(fields_lbl, LV_LABEL_LONG_WRAP);
@@ -494,7 +494,7 @@ static void show_handshake_list(void)
     if (hs_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
         lv_label_set_text(lbl, "No handshake files found.");
-        lv_obj_set_style_text_color(lbl, UI_TEXT_DIM, 0);
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
         lv_obj_center(lbl);
         return;
@@ -512,7 +512,7 @@ static void show_handshake_list(void)
     for (int i = 0; i < hs_count; i++) {
         lv_obj_t *row = lv_obj_create(list);
         lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(row, UI_BG_CARD, 0);
+        lv_obj_set_style_bg_color(row, ui_card_color(), 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(row, 6, 0);
         lv_obj_set_style_border_width(row, 0, 0);
@@ -598,7 +598,7 @@ void show_compromised_data_screen(void)
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_y(grid, 36);
 
-    ui_create_tile(grid, "Evil Twin\nPasswords", UI_ACCENT_GREEN,  on_evil_passwords, NULL);
-    ui_create_tile(grid, "Portal\nData",         UI_ACCENT_PURPLE, on_portal_data,    NULL);
-    ui_create_tile(grid, "Handshakes",           UI_ACCENT_ORANGE, on_handshakes,     NULL);
+    ui_create_tile(grid, LV_SYMBOL_EYE_CLOSE, "Evil Twin\nPasswords", UI_ACCENT_GREEN,  on_evil_passwords, NULL);
+    ui_create_tile(grid, LV_SYMBOL_FILE,      "Portal\nData",         UI_ACCENT_PURPLE, on_portal_data,    NULL);
+    ui_create_tile(grid, LV_SYMBOL_DOWNLOAD,  "Handshakes",           UI_ACCENT_ORANGE, on_handshakes,     NULL);
 }
