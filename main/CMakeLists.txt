@@ -20,6 +20,12 @@ idf_component_register(
         "screens/compromised_data_screen.c"
         "screens/bluetooth_screen.c"
         "screens/deauth_detector_screen.c"
+        "screens/subghz_screen.c"
+        "screens/subghz_listen_screen.c"
+        "screens/subghz_transmit_screen.c"
+        "screens/subghz_manage_screen.c"
+        "screens/subghz_jammer_screen.c"
+        "screens/subghz_tesla_screen.c"
     INCLUDE_DIRS
         "."
         "screens"

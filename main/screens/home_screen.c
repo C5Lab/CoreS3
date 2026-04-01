@@ -5,6 +5,7 @@
 #include "compromised_data_screen.h"
 #include "bluetooth_screen.h"
 #include "deauth_detector_screen.h"
+#include "subghz_screen.h"
 #include "ui_helpers.h"
 #include "esp_log.h"
 
@@ -54,6 +55,13 @@ static void on_deauth_detector(lv_event_t *e)
     show_deauth_detector_screen();
 }
 
+static void on_subghz(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Sub-GHz");
+    show_subghz_screen();
+}
+
 static void on_settings(lv_event_t *e)
 {
     (void)e;
@@ -67,8 +75,12 @@ void show_home_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
 
-    /* top bar (no back button on home) */
-    ui_create_top_bar(scr, "LABORATORIUM", NULL, NULL);
+    /* compact title */
+    lv_obj_t *title = lv_label_create(scr);
+    lv_label_set_text(title, "Lab5");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 3);
 
     /* scrollable tile grid */
     lv_obj_t *grid = lv_obj_create(scr);
@@ -78,12 +90,11 @@ void show_home_screen(void)
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(grid, 6, 0);
     lv_obj_set_style_pad_column(grid, 6, 0);
-    lv_obj_set_style_pad_top(grid, 6, 0);
-    lv_obj_set_style_pad_bottom(grid, 6, 0);
+    lv_obj_set_style_pad_top(grid, 4, 0);
+    lv_obj_set_style_pad_bottom(grid, 4, 0);
     lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(grid, 0, 0);
-    lv_obj_align_to(grid, lv_obj_get_child(scr, 0), LV_ALIGN_OUT_BOTTOM_MID, 0, 0);
-    lv_obj_set_y(grid, 36);
+    lv_obj_set_y(grid, 20);
 
     ui_create_tile(grid, LV_SYMBOL_WIFI,      "WiFi Scan\n& Attack",        UI_ACCENT_BLUE,           on_wifi_scan,       NULL);
     ui_create_tile(grid, LV_SYMBOL_WARNING,   "Global WiFi\nAttacks",      UI_ACCENT_RED,            on_global_wifi,     NULL);
@@ -91,5 +102,6 @@ void show_home_screen(void)
     ui_create_tile(grid, LV_SYMBOL_DOWNLOAD,  "Compromised\nData",         UI_ACCENT_GREEN,          on_compromised,     NULL);
     ui_create_tile(grid, LV_SYMBOL_BLUETOOTH, "Bluetooth",                 UI_ACCENT_PURPLE,         on_bluetooth,       NULL);
     ui_create_tile(grid, LV_SYMBOL_CHARGE,    "Deauth\nDetector",          UI_ACCENT_CYAN,           on_deauth_detector, NULL);
+    ui_create_tile(grid, LV_SYMBOL_BARS,      "Sub-GHz",                   UI_ACCENT_PINK,           on_subghz,          NULL);
     ui_create_tile(grid, LV_SYMBOL_SETTINGS,  "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
 }
