@@ -3,6 +3,7 @@ idf_component_register(
         "main.c"
         "uart_handler.c"
         "ui_helpers.c"
+        "lvgl_psram_malloc.c"
         "cardkb.c"
         "subghz_parser.c"
         "screens/home_screen.c"
@@ -40,4 +41,20 @@ idf_component_register(
         esp_lvgl_port
         esp_codec_dev
         m5stack_core_s3
+        lvgl__lvgl
+)
+
+# Force inclusion of our LVGL custom-malloc backend so the linker pulls
+# the lv_*_core symbols in even though they're called from inside LVGL,
+# which is scanned before main.a in the one-pass link.
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    "-u lv_malloc_core"
+    "-u lv_realloc_core"
+    "-u lv_free_core"
+    "-u lv_mem_init"
+    "-u lv_mem_deinit"
+    "-u lv_mem_monitor_core"
+    "-u lv_mem_test_core"
+    "-u lv_mem_add_pool"
+    "-u lv_mem_remove_pool"
 )

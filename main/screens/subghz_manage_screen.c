@@ -30,11 +30,20 @@ static lv_obj_t     *s_list;
 static lv_obj_t     *s_status_lbl;
 static lv_obj_t     *s_confirm_popup;
 static lv_timer_t   *s_kb_timer;
+static lv_timer_t   *s_build_timer;
+static int           s_build_idx;
+
+#define BUILD_ROWS_PER_TICK 6
 
 static void on_back(lv_event_t *e);
 static void build_list(void);
+static void build_list_step(lv_timer_t *t);
+static void build_one_row(int i);
 static void kb_poll_cb(lv_timer_t *t);
 static void fill_signal(mgmt_signal_t *dst, const subghz_signal_info_t *src);
+static void rebuild_list_async(void *unused);
+static void import_done_async(void *user_data);
+static void stop_build_timer(void);
 
 static void fill_signal(mgmt_signal_t *dst, const subghz_signal_info_t *src)
 {
@@ -46,6 +55,16 @@ static void fill_signal(mgmt_signal_t *dst, const subghz_signal_info_t *src)
     snprintf(dst->type, sizeof(dst->type), "%s", src->type[0] ? src->type : "--");
     snprintf(dst->serial, sizeof(dst->serial), "%s", src->serial[0] ? src->serial : "--");
     snprintf(dst->mf, sizeof(dst->mf), "%s", src->mf[0] ? src->mf : "--");
+}
+
+static void rebuild_list_async(void *unused)
+{
+    (void)unused;
+    if (s_status_lbl) {
+        lv_label_set_text_fmt(s_status_lbl, "%d signals stored", s_sig_count);
+        lv_obj_set_style_text_color(s_status_lbl, ui_muted_color(), 0);
+    }
+    build_list();
 }
 
 static void on_list_received(const char **lines, int count)
@@ -64,13 +83,9 @@ static void on_list_received(const char **lines, int count)
         }
     }
 
-    bsp_display_lock(0);
-    if (s_status_lbl) {
-        lv_label_set_text_fmt(s_status_lbl, "%d signals stored", s_sig_count);
-        lv_obj_set_style_text_color(s_status_lbl, ui_muted_color(), 0);
-    }
-    build_list();
-    bsp_display_unlock();
+    /* Defer all LVGL work to the LVGL task to avoid hogging core 0 in uart_rx
+     * and starving IDLE0 (would trip task_wdt for ~50 signals). */
+    lv_async_call(rebuild_list_async, NULL);
 }
 
 static void on_delete_tap(lv_event_t *e)
@@ -92,10 +107,80 @@ static void on_delete_tap(lv_event_t *e)
     uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);
 }
 
+static void stop_build_timer(void)
+{
+    if (s_build_timer) {
+        lv_timer_delete(s_build_timer);
+        s_build_timer = NULL;
+    }
+}
+
+/* Build a single row with a single combined label + delete button.
+ * Far cheaper than 6 widgets per row, and chunking these in lv_timer
+ * keeps LVGL responsive on long lists (50+ signals). */
+static void build_one_row(int i)
+{
+    mgmt_signal_t *sig = &s_sigs[i];
+
+    lv_obj_t *row = lv_obj_create(s_list);
+    lv_obj_set_size(row, LV_PCT(100), 28);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(row, 3, 0);
+    lv_obj_set_style_pad_gap(row, 6, 0);
+    lv_obj_set_style_bg_color(row, ui_card_color(), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_radius(row, 5, 0);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *info = lv_label_create(row);
+    lv_obj_set_flex_grow(info, 1);
+    lv_obj_set_style_text_font(info, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(info, ui_text_color(), 0);
+    lv_label_set_long_mode(info, LV_LABEL_LONG_CLIP);
+    lv_label_set_text_fmt(info, "%d  %s  %d.%d  %s",
+                          sig->idx, sig->type,
+                          (int)sig->freq, ((int)(sig->freq * 10.0f + 0.5f)) % 10,
+                          sig->mf[0] ? sig->mf : sig->serial);
+
+    lv_obj_t *del_btn = lv_btn_create(row);
+    lv_obj_set_size(del_btn, 24, 22);
+    lv_obj_set_style_bg_color(del_btn, UI_ACCENT_RED, 0);
+    lv_obj_set_style_radius(del_btn, 4, 0);
+    lv_obj_add_event_cb(del_btn, on_delete_tap, LV_EVENT_CLICKED,
+                        (void *)(intptr_t)sig->idx);
+
+    lv_obj_t *icon = lv_label_create(del_btn);
+    lv_label_set_text(icon, LV_SYMBOL_TRASH);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_10, 0);
+    lv_obj_center(icon);
+}
+
+static void build_list_step(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_list) {
+        stop_build_timer();
+        return;
+    }
+    int target = s_build_idx + BUILD_ROWS_PER_TICK;
+    if (target > s_sig_count) target = s_sig_count;
+    for (; s_build_idx < target; s_build_idx++) {
+        build_one_row(s_build_idx);
+    }
+    if (s_build_idx >= s_sig_count) {
+        stop_build_timer();
+    }
+}
+
 static void build_list(void)
 {
+    stop_build_timer();
     if (!s_list) return;
     lv_obj_clean(s_list);
+    s_build_idx = 0;
 
     if (s_sig_count == 0) {
         lv_obj_t *l = lv_label_create(s_list);
@@ -105,61 +190,9 @@ static void build_list(void)
         return;
     }
 
-    for (int i = 0; i < s_sig_count; i++) {
-        mgmt_signal_t *sig = &s_sigs[i];
-
-        lv_obj_t *row = lv_obj_create(s_list);
-        lv_obj_set_size(row, LV_PCT(100), 30);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
-                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_all(row, 3, 0);
-        lv_obj_set_style_pad_gap(row, 4, 0);
-        lv_obj_set_style_bg_color(row, ui_card_color(), 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_radius(row, 5, 0);
-
-        lv_obj_t *l;
-
-        l = lv_label_create(row);
-        lv_obj_set_width(l, 22);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, UI_ACCENT_ORANGE, 0);
-        lv_label_set_text_fmt(l, "%d", sig->idx);
-
-        l = lv_label_create(row);
-        lv_obj_set_width(l, 50);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, ui_text_color(), 0);
-        lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-        lv_label_set_text(l, sig->type);
-
-        l = lv_label_create(row);
-        lv_obj_set_width(l, 45);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-        lv_label_set_text_fmt(l, "%d.%d", (int)sig->freq, ((int)(sig->freq * 10.0f + 0.5f)) % 10);
-
-        l = lv_label_create(row);
-        lv_obj_set_flex_grow(l, 1);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, ui_text_color(), 0);
-        lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-        lv_label_set_text(l, sig->mf[0] ? sig->mf : sig->serial);
-
-        lv_obj_t *del_btn = lv_btn_create(row);
-        lv_obj_set_size(del_btn, 24, 22);
-        lv_obj_set_style_bg_color(del_btn, UI_ACCENT_RED, 0);
-        lv_obj_set_style_radius(del_btn, 4, 0);
-        lv_obj_add_event_cb(del_btn, on_delete_tap, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)sig->idx);
-
-        l = lv_label_create(del_btn);
-        lv_label_set_text(l, LV_SYMBOL_TRASH);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_center(l);
-    }
+    /* Schedule chunked builds. Period 30 ms gives LVGL room to render
+     * and feed IDLE between batches; 6 rows per batch keeps each tick short. */
+    s_build_timer = lv_timer_create(build_list_step, 30, NULL);
 }
 
 static void close_confirm_popup(void)
@@ -252,6 +285,18 @@ static void on_export_all(lv_event_t *e)
     ESP_LOGI(TAG, "Export all");
 }
 
+static int s_imported_count;
+
+static void import_done_async(void *user_data)
+{
+    (void)user_data;
+    if (s_status_lbl) {
+        lv_label_set_text_fmt(s_status_lbl, "Imported %d signal%s",
+                              s_imported_count, s_imported_count == 1 ? "" : "s");
+        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_GREEN, 0);
+    }
+}
+
 static void on_import_done(const char **lines, int count)
 {
     int imported = 0;
@@ -259,14 +304,10 @@ static void on_import_done(const char **lines, int count)
         if (strstr(lines[i], "[SUBGHZ_IMPORT] "))
             imported++;
     }
+    s_imported_count = imported;
 
-    bsp_display_lock(0);
-    if (s_status_lbl) {
-        lv_label_set_text_fmt(s_status_lbl, "Imported %d signal%s",
-                              imported, imported == 1 ? "" : "s");
-        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_GREEN, 0);
-    }
-    bsp_display_unlock();
+    /* Update label + chain follow-up subghz_list on the LVGL task. */
+    lv_async_call(import_done_async, NULL);
 
     uart_send_command("subghz_list");
     uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);
@@ -289,7 +330,10 @@ static void on_back(lv_event_t *e)
     (void)e;
     uart_stop_collect();
     close_confirm_popup();
+    stop_build_timer();
     if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
+    s_list = NULL;
+    s_status_lbl = NULL;
     show_subghz_screen();
 }
 
@@ -309,6 +353,8 @@ void show_subghz_manage_screen(void)
     s_status_lbl    = NULL;
     s_confirm_popup = NULL;
     s_kb_timer      = NULL;
+    s_build_timer   = NULL;
+    s_build_idx     = 0;
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Manage Signals", on_back, NULL);

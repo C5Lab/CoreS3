@@ -2,6 +2,7 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
@@ -9,16 +10,58 @@
 
 static const char *TAG = "uart";
 
-#define UART_BUF_SIZE       (16 * 1024)   /* 16 KB – large scan output */
-#define MAX_COLLECTED_LINES 128
+#define UART_BUF_SIZE         (16 * 1024)  /* 16 KB – large scan output */
+/* Górny limit żeby zbłądzony strumień UART nie wyczerpał PSRAM. */
+#define UART_COLLECT_HARD_CAP 4096
 
 static uart_line_callback_t line_callback = NULL;
 static volatile bool collecting = false;
-static char *collected_lines[MAX_COLLECTED_LINES];
-static int collected_count = 0;
+static char **collected_lines    = NULL;   /* w PSRAM, dynamicznie rośnie */
+static int    collected_count    = 0;
+static int    collected_capacity = 0;
 static char end_marker[64] = {0};
 static uart_collect_callback_t collect_callback = NULL;
 static TickType_t collect_start_tick = 0;
+
+static bool ensure_capacity(int needed)
+{
+    if (needed <= collected_capacity) return true;
+
+    int new_cap = collected_capacity ? collected_capacity : 64;
+    while (new_cap < needed && new_cap < UART_COLLECT_HARD_CAP) new_cap *= 2;
+    if (new_cap > UART_COLLECT_HARD_CAP) new_cap = UART_COLLECT_HARD_CAP;
+    if (new_cap <= collected_capacity) return false;
+
+    char **np = heap_caps_realloc(collected_lines,
+                                  new_cap * sizeof(char *),
+                                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!np) {
+        ESP_LOGE(TAG, "PSRAM realloc failed (%d -> %d)", collected_capacity, new_cap);
+        return false;
+    }
+    collected_lines = np;
+    collected_capacity = new_cap;
+    return true;
+}
+
+static char *psram_strdup(const char *s)
+{
+    size_t n = strlen(s) + 1;
+    char *p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (p) memcpy(p, s, n);
+    return p;
+}
+
+static void release_lines(void)
+{
+    for (int i = 0; i < collected_count; i++) {
+        if (collected_lines && collected_lines[i]) {
+            free(collected_lines[i]);
+            collected_lines[i] = NULL;
+        }
+    }
+    collected_count = 0;
+}
 
 static bool is_noisy_subghz_line(const char *line)
 {
@@ -38,12 +81,18 @@ static void process_line(char *line)
         ESP_LOGI(TAG, "RX: %s", line);
 
     if (collecting) {
-        if (collected_count < MAX_COLLECTED_LINES) {
-            collected_lines[collected_count] = strdup(line);
-            if (collected_lines[collected_count])
-                collected_count++;
+        if (collected_count >= UART_COLLECT_HARD_CAP) {
+            ESP_LOGW(TAG, "COLLECT hard cap (%d) reached, dropping line",
+                     UART_COLLECT_HARD_CAP);
+        } else if (!ensure_capacity(collected_count + 1)) {
+            ESP_LOGW(TAG, "COLLECT cannot grow PSRAM buffer, dropping line");
         } else {
-            ESP_LOGW(TAG, "COLLECT buffer full (%d), dropping line", MAX_COLLECTED_LINES);
+            char *dup = psram_strdup(line);
+            if (dup) {
+                collected_lines[collected_count++] = dup;
+            } else {
+                ESP_LOGW(TAG, "COLLECT psram_strdup failed, dropping line");
+            }
         }
         bool marker_found = (strstr(line, end_marker) != NULL);
         ESP_LOGD(TAG, "COLLECT [%d]: \"%s\" (marker=%s)",
@@ -53,11 +102,7 @@ static void process_line(char *line)
             collecting = false;
             if (collect_callback)
                 collect_callback((const char **)collected_lines, collected_count);
-            for (int i = 0; i < collected_count; i++) {
-                free(collected_lines[i]);
-                collected_lines[i] = NULL;
-            }
-            collected_count = 0;
+            release_lines();
         }
     }
 
@@ -73,11 +118,7 @@ static void finish_collect(bool timed_out)
                  UART_COLLECT_TIMEOUT_MS, collected_count);
     if (collect_callback)
         collect_callback((const char **)collected_lines, collected_count);
-    for (int i = 0; i < collected_count; i++) {
-        free(collected_lines[i]);
-        collected_lines[i] = NULL;
-    }
-    collected_count = 0;
+    release_lines();
 }
 
 static void uart_rx_task(void *arg)
@@ -173,11 +214,7 @@ void uart_send_command(const char *cmd)
 
 void uart_start_collect(const char *marker, uart_collect_callback_t on_complete)
 {
-    for (int i = 0; i < collected_count; i++) {
-        free(collected_lines[i]);
-        collected_lines[i] = NULL;
-    }
-    collected_count = 0;
+    release_lines();
     strncpy(end_marker, marker, sizeof(end_marker) - 1);
     end_marker[sizeof(end_marker) - 1] = '\0';
     collect_callback = on_complete;
@@ -190,11 +227,7 @@ void uart_stop_collect(void)
 {
     collecting = false;
     collect_callback = NULL;
-    for (int i = 0; i < collected_count; i++) {
-        free(collected_lines[i]);
-        collected_lines[i] = NULL;
-    }
-    collected_count = 0;
+    release_lines();
 }
 
 bool uart_is_collecting(void)
