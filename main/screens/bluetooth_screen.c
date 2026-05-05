@@ -3,6 +3,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include <stdio.h>
@@ -163,7 +164,7 @@ static void show_airtag_scan(void)
 /*  BT Locator: scan_bt (one-shot device list)                        */
 /* ================================================================== */
 
-#define MAX_BT_DEVICES 64
+#define BT_DEV_HARD_CAP 1024
 
 typedef struct {
     int  index;
@@ -172,7 +173,8 @@ typedef struct {
     char name[64];
 } bt_device_t;
 
-static bt_device_t bt_devices[MAX_BT_DEVICES];
+static bt_device_t *bt_devices;
+static int          bt_devices_cap;
 static int bt_device_count = 0;
 static int bt_total = 0;
 static int bt_airtags = 0;
@@ -496,12 +498,15 @@ static void bt_scan_complete(const char **lines, int line_count)
             continue;
         }
 
-        if (bt_device_count >= MAX_BT_DEVICES) continue;
-
         bt_device_t dev;
-        if (parse_bt_device_line(line, &dev)) {
-            bt_devices[bt_device_count++] = dev;
+        if (!parse_bt_device_line(line, &dev)) continue;
+        if (!psram_dynarr_ensure((void **)&bt_devices, &bt_devices_cap,
+                                 bt_device_count + 1, sizeof(*bt_devices),
+                                 BT_DEV_HARD_CAP)) {
+            ESP_LOGW(TAG, "BT cap reached at %d, dropping rest", bt_device_count);
+            continue;
         }
+        bt_devices[bt_device_count++] = dev;
     }
 
     if (bt_total == 0) bt_total = bt_device_count;

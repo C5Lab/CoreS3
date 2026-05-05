@@ -2,6 +2,7 @@
 #include "home_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
+#include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -16,7 +17,7 @@ static const char *TAG = "compromised";
 /*  Shared data structures                                             */
 /* ================================================================== */
 
-#define MAX_ENTRIES 64
+#define COMPRO_HARD_CAP 1024
 
 /* Evil Twin passwords: "SSID", "password" */
 typedef struct {
@@ -24,7 +25,8 @@ typedef struct {
     char password[64];
 } evil_pass_entry_t;
 
-static evil_pass_entry_t evil_entries[MAX_ENTRIES];
+static evil_pass_entry_t *evil_entries = NULL;
+static int evil_cap = 0;
 static int evil_count = 0;
 
 /* Portal data: "SSID", "field1=val1", ... */
@@ -33,7 +35,8 @@ typedef struct {
     char fields[192];   /* all fields concatenated, separated by \n */
 } portal_entry_t;
 
-static portal_entry_t portal_entries[MAX_ENTRIES];
+static portal_entry_t *portal_entries = NULL;
+static int portal_cap = 0;
 static int portal_count = 0;
 
 /* Handshake files */
@@ -42,7 +45,8 @@ typedef struct {
     char filename[128];
 } handshake_entry_t;
 
-static handshake_entry_t hs_entries[MAX_ENTRIES];
+static handshake_entry_t *hs_entries = NULL;
+static int hs_cap = 0;
 static int hs_count = 0;
 
 /* Timers for timeout-based collection (show_pass has no end marker) */
@@ -297,7 +301,9 @@ static void evil_line_cb(const char *line)
     const char *pass_end = strchr(pass_start, '"');
     if (!pass_end) return;
 
-    if (evil_count >= MAX_ENTRIES) return;
+    if (!psram_dynarr_ensure((void **)&evil_entries, &evil_cap,
+                             evil_count + 1, sizeof(*evil_entries),
+                             COMPRO_HARD_CAP)) return;
 
     int ssid_len = ssid_end - ssid_start;
     int pass_len = pass_end - pass_start;
@@ -412,7 +418,9 @@ static void portal_line_cb(const char *line)
     if (!timer_collecting) return;
     if (line[0] != '"') return;
 
-    if (portal_count >= MAX_ENTRIES) return;
+    if (!psram_dynarr_ensure((void **)&portal_entries, &portal_cap,
+                             portal_count + 1, sizeof(*portal_entries),
+                             COMPRO_HARD_CAP)) return;
 
     /* Parse: "SSID", "field1=val1", "field2=val2", ... */
     const char *ssid_start = line + 1;
@@ -534,7 +542,7 @@ static void hs_collect_cb(const char **lines, int line_count)
     hs_count = 0;
     bool header_found = false;
 
-    for (int i = 0; i < line_count && hs_count < MAX_ENTRIES; i++) {
+    for (int i = 0; i < line_count; i++) {
         const char *line = lines[i];
 
         if (strstr(line, "Files in") != NULL) {
@@ -550,6 +558,12 @@ static void hs_collect_cb(const char **lines, int line_count)
         int num;
         char filename[128];
         if (sscanf(line, "%d %127[^\n]", &num, filename) == 2) {
+            if (!psram_dynarr_ensure((void **)&hs_entries, &hs_cap,
+                                     hs_count + 1, sizeof(*hs_entries),
+                                     COMPRO_HARD_CAP)) {
+                ESP_LOGW(TAG, "hs cap reached at %d", hs_count);
+                break;
+            }
             hs_entries[hs_count].number = num;
             snprintf(hs_entries[hs_count].filename,
                      sizeof(hs_entries[0].filename), "%s", filename);

@@ -4,6 +4,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "psram_dynarr.h"
 #include "esp_log.h"
 #include "bsp/m5stack_core_s3.h"
 #include <string.h>
@@ -12,7 +13,7 @@
 
 static const char *TAG = "subghz_manage";
 
-#define MAX_SIGNALS 64
+#define SUBGHZ_SIG_HARD_CAP 2048
 
 typedef struct {
     int   idx;
@@ -24,8 +25,9 @@ typedef struct {
     char  mf[32];
 } mgmt_signal_t;
 
-static mgmt_signal_t s_sigs[MAX_SIGNALS];
-static int           s_sig_count;
+static mgmt_signal_t *s_sigs;
+static int            s_sig_cap;
+static int            s_sig_count;
 static lv_obj_t     *s_list;
 static lv_obj_t     *s_status_lbl;
 static lv_obj_t     *s_confirm_popup;
@@ -70,11 +72,18 @@ static void rebuild_list_async(void *unused)
 static void on_list_received(const char **lines, int count)
 {
     s_sig_count = 0;
-    for (int i = 0; i < count && s_sig_count < MAX_SIGNALS; i++) {
+    for (int i = 0; i < count; i++) {
         subghz_signal_info_t parsed;
 
         if (!subghz_parse_signal_line(lines[i], &parsed) || parsed.kind != SUBGHZ_SIGNAL_KIND_LIST)
             continue;
+
+        if (!psram_dynarr_ensure((void **)&s_sigs, &s_sig_cap,
+                                 s_sig_count + 1, sizeof(*s_sigs),
+                                 SUBGHZ_SIG_HARD_CAP)) {
+            ESP_LOGW(TAG, "signal cap reached at %d, dropping rest", s_sig_count);
+            break;
+        }
 
         mgmt_signal_t *s = &s_sigs[s_sig_count];
         fill_signal(s, &parsed);

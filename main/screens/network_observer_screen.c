@@ -2,6 +2,7 @@
 #include "home_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
+#include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -16,9 +17,9 @@ static const char *TAG = "observer";
 /*  Data structures                                                    */
 /* ================================================================== */
 
-#define MAX_OBS_NETWORKS    32
-#define MAX_CLIENTS_PER_NET 10
-#define MAX_PROBES          64
+#define OBS_NET_HARD_CAP    256
+#define MAX_CLIENTS_PER_NET 32
+#define OBS_PROBE_HARD_CAP  1024
 #define MAX_SD_FILES        32
 #define POLL_INTERVAL_US    (15 * 1000000)
 #define FOCUSED_POLL_US     (5 * 1000000)
@@ -50,7 +51,8 @@ typedef struct {
 /*  State                                                              */
 /* ================================================================== */
 
-static obs_network_t obs_nets[MAX_OBS_NETWORKS];
+static obs_network_t *obs_nets = NULL;
+static int  obs_nets_cap     = 0;
 static int  obs_net_count    = 0;
 static bool obs_running      = false;
 
@@ -63,7 +65,8 @@ static bool deauth_active    = false;
 static int  deauth_net_idx   = -1;
 static int  deauth_cli_idx   = -1;
 
-static obs_probe_t  probes[MAX_PROBES];
+static obs_probe_t *probes = NULL;
+static int  probes_cap         = 0;
 static int  probe_count        = 0;
 static bool probe_collecting   = false;
 static int  selected_probe_idx = -1;
@@ -223,7 +226,10 @@ static void poll_line_cb(const char *line)
         for (int i = 0; i < obs_net_count; i++) {
             if (strcmp(obs_nets[i].ssid, ssid) == 0) { matched = i; break; }
         }
-        if (matched < 0 && obs_net_count < MAX_OBS_NETWORKS) {
+        if (matched < 0 &&
+            psram_dynarr_ensure((void **)&obs_nets, &obs_nets_cap,
+                                obs_net_count + 1, sizeof(*obs_nets),
+                                OBS_NET_HARD_CAP)) {
             matched = obs_net_count;
             memset(&obs_nets[matched], 0, sizeof(obs_network_t));
             memcpy(obs_nets[matched].ssid, ssid, sizeof(obs_nets[matched].ssid) - 1);
@@ -901,7 +907,9 @@ static void probe_line_cb(const char *line)
     while (*p == ' ') p++;
     if (*p == '\0') return;
 
-    if (probe_count < MAX_PROBES) {
+    if (psram_dynarr_ensure((void **)&probes, &probes_cap,
+                            probe_count + 1, sizeof(*probes),
+                            OBS_PROBE_HARD_CAP)) {
         probes[probe_count].index = idx;
         strncpy(probes[probe_count].ssid, p, 32);
         probes[probe_count].ssid[32] = '\0';
@@ -1282,17 +1290,24 @@ static void on_scan_complete(const char **lines, int count)
 {
     ESP_LOGI(TAG, "Scan callback: %d lines", count);
     obs_net_count = 0;
-    memset(obs_nets, 0, sizeof(obs_nets));
+    if (obs_nets && obs_nets_cap > 0) {
+        memset(obs_nets, 0, (size_t)obs_nets_cap * sizeof(*obs_nets));
+    }
 
-    for (int i = 0; i < count && obs_net_count < MAX_OBS_NETWORKS; i++) {
+    for (int i = 0; i < count; i++) {
         obs_network_t net;
         memset(&net, 0, sizeof(net));
-        if (parse_scan_line(lines[i], &net)) {
-            obs_nets[obs_net_count++] = net;
-            ESP_LOGD(TAG, " #%d %s ch%d %ddBm", net.scan_index,
-                     net.ssid[0] ? net.ssid : "(hidden)",
-                     net.channel, net.rssi);
+        if (!parse_scan_line(lines[i], &net)) continue;
+        if (!psram_dynarr_ensure((void **)&obs_nets, &obs_nets_cap,
+                                 obs_net_count + 1, sizeof(*obs_nets),
+                                 OBS_NET_HARD_CAP)) {
+            ESP_LOGW(TAG, "obs_nets cap reached at %d", obs_net_count);
+            break;
         }
+        obs_nets[obs_net_count++] = net;
+        ESP_LOGD(TAG, " #%d %s ch%d %ddBm", net.scan_index,
+                 net.ssid[0] ? net.ssid : "(hidden)",
+                 net.channel, net.rssi);
     }
 
     sort_networks();
@@ -1326,7 +1341,9 @@ void show_network_observer_screen(void)
     lv_obj_align(lb, LV_ALIGN_CENTER, 0, 50);
 
     obs_net_count = 0;
-    memset(obs_nets, 0, sizeof(obs_nets));
+    if (obs_nets && obs_nets_cap > 0) {
+        memset(obs_nets, 0, (size_t)obs_nets_cap * sizeof(*obs_nets));
+    }
 
     uart_start_collect("Scan results printed", on_scan_complete);
     uart_send_command("scan_networks");

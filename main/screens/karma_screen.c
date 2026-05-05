@@ -3,6 +3,7 @@
 #include "sniffer_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
+#include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -17,14 +18,15 @@ static const char *TAG = "karma";
 /*  Probe list state                                                   */
 /* ================================================================== */
 
-#define MAX_PROBES 64
+#define KARMA_PROBE_HARD_CAP 1024
 
 typedef struct {
     int  index;
     char ssid[33];
 } karma_probe_t;
 
-static karma_probe_t probes[MAX_PROBES];
+static karma_probe_t *probes = NULL;
+static int  probes_cap         = 0;
 static int  probe_count        = 0;
 static bool probe_collecting   = false;
 static int  selected_probe_idx = -1;
@@ -109,7 +111,10 @@ static void probe_line_cb(const char *line)
     if (!probe_collecting) return;
 
     karma_probe_t p;
-    if (parse_probe_line(line, &p) && probe_count < MAX_PROBES) {
+    if (parse_probe_line(line, &p) &&
+        psram_dynarr_ensure((void **)&probes, &probes_cap,
+                            probe_count + 1, sizeof(*probes),
+                            KARMA_PROBE_HARD_CAP)) {
         probes[probe_count++] = p;
         esp_timer_stop(probe_timeout_timer);
         esp_timer_start_once(probe_timeout_timer, 500000);

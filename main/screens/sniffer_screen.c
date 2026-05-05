@@ -4,6 +4,7 @@
 #include "wifi_scan_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
+#include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -16,8 +17,8 @@ static const char *TAG = "sniffer";
 
 /* ---- observer data ---- */
 
-#define MAX_OBSERVER_NETWORKS 32
-#define MAX_CLIENTS_PER_NET   10
+#define OBS_NET_HARD_CAP    256
+#define MAX_CLIENTS_PER_NET 32
 
 typedef struct {
     char ssid[33];
@@ -26,7 +27,8 @@ typedef struct {
     char clients[MAX_CLIENTS_PER_NET][18];
 } observer_network_t;
 
-static observer_network_t obs_networks[MAX_OBSERVER_NETWORKS];
+static observer_network_t *obs_networks = NULL;
+static int obs_networks_cap = 0;
 static int obs_network_count = 0;
 static int obs_current_net   = -1;
 static bool obs_collecting   = false;
@@ -133,7 +135,9 @@ static void obs_collect_line_cb(const char *line)
     observer_network_t net;
     memset(&net, 0, sizeof(net));
     if (parse_observer_network_line(line, &net)) {
-        if (obs_network_count < MAX_OBSERVER_NETWORKS) {
+        if (psram_dynarr_ensure((void **)&obs_networks, &obs_networks_cap,
+                                obs_network_count + 1, sizeof(*obs_networks),
+                                OBS_NET_HARD_CAP)) {
             obs_networks[obs_network_count] = net;
             obs_current_net = obs_network_count;
             obs_network_count++;

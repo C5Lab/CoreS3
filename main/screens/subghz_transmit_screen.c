@@ -4,6 +4,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "psram_dynarr.h"
 #include "esp_log.h"
 #include "bsp/m5stack_core_s3.h"
 #include <string.h>
@@ -12,7 +13,7 @@
 
 static const char *TAG = "subghz_tx";
 
-#define MAX_TX_SIGNALS 64
+#define SUBGHZ_TX_SIG_HARD_CAP 2048
 
 typedef struct {
     int   idx;
@@ -24,7 +25,8 @@ typedef struct {
     char  mf[32];
 } tx_signal_t;
 
-static tx_signal_t  s_sigs[MAX_TX_SIGNALS];
+static tx_signal_t *s_sigs;
+static int          s_sig_cap;
 static int          s_sig_count;
 static lv_obj_t    *s_list;
 static lv_obj_t    *s_status_lbl;
@@ -54,11 +56,18 @@ static void fill_signal(tx_signal_t *dst, const subghz_signal_info_t *src)
 static void on_list_received(const char **lines, int count)
 {
     s_sig_count = 0;
-    for (int i = 0; i < count && s_sig_count < MAX_TX_SIGNALS; i++) {
+    for (int i = 0; i < count; i++) {
         subghz_signal_info_t parsed;
 
         if (!subghz_parse_signal_line(lines[i], &parsed) || parsed.kind != SUBGHZ_SIGNAL_KIND_LIST)
             continue;
+
+        if (!psram_dynarr_ensure((void **)&s_sigs, &s_sig_cap,
+                                 s_sig_count + 1, sizeof(*s_sigs),
+                                 SUBGHZ_TX_SIG_HARD_CAP)) {
+            ESP_LOGW(TAG, "tx signal cap reached at %d, dropping rest", s_sig_count);
+            break;
+        }
 
         tx_signal_t *s = &s_sigs[s_sig_count];
         fill_signal(s, &parsed);

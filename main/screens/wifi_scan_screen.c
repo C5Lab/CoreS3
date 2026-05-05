@@ -3,6 +3,7 @@
 #include "home_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
+#include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include <stdio.h>
@@ -11,7 +12,10 @@
 
 static const char *TAG = "wifi_scan";
 
-static wifi_network_t networks[MAX_NETWORKS];
+#define WIFI_NET_HARD_CAP MAX_NETWORKS
+
+static wifi_network_t *networks = NULL;
+static int networks_cap = 0;
 static int network_count = 0;
 
 /* ---- public accessors ---- */
@@ -177,7 +181,7 @@ static void build_network_list(void)
         lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
         lv_obj_set_width(name_lbl, 200);
 
-        char info[48];
+        char info[64];
         snprintf(info, sizeof(info), "%ddBm  ch%d  %s  %s",
                  net->rssi, net->channel, net->band, net->security);
         lv_obj_t *info_lbl = lv_label_create(col);
@@ -216,14 +220,19 @@ static void on_scan_complete(const char **lines, int line_count)
 {
     ESP_LOGI(TAG, "Scan callback: %d collected lines", line_count);
     network_count = 0;
-    for (int i = 0; i < line_count && network_count < MAX_NETWORKS; i++) {
+    for (int i = 0; i < line_count; i++) {
         wifi_network_t net;
-        if (parse_network_line(lines[i], &net)) {
-            networks[network_count++] = net;
-            ESP_LOGD(TAG, " #%d %s ch%d %ddBm",
-                     net.index, net.ssid[0] ? net.ssid : "(hidden)",
-                     net.channel, net.rssi);
+        if (!parse_network_line(lines[i], &net)) continue;
+        if (!psram_dynarr_ensure((void **)&networks, &networks_cap,
+                                 network_count + 1, sizeof(*networks),
+                                 WIFI_NET_HARD_CAP)) {
+            ESP_LOGW(TAG, "wifi cap reached at %d, dropping rest", network_count);
+            break;
         }
+        networks[network_count++] = net;
+        ESP_LOGD(TAG, " #%d %s ch%d %ddBm",
+                 net.index, net.ssid[0] ? net.ssid : "(hidden)",
+                 net.channel, net.rssi);
     }
     ESP_LOGI(TAG, "Parsed %d networks from %d lines", network_count, line_count);
 
@@ -266,7 +275,9 @@ void show_wifi_scan_screen(void)
     lv_obj_align(scan_status_lbl, LV_ALIGN_CENTER, 0, 50);
 
     network_count = 0;
-    memset(networks, 0, sizeof(networks));
+    if (networks && networks_cap > 0) {
+        memset(networks, 0, (size_t)networks_cap * sizeof(*networks));
+    }
     uart_start_collect("Scan results printed", on_scan_complete);
     uart_send_command("scan_networks");
 }

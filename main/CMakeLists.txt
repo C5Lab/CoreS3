@@ -4,6 +4,7 @@ idf_component_register(
         "uart_handler.c"
         "ui_helpers.c"
         "lvgl_psram_malloc.c"
+        "psram_dynarr.c"
         "cardkb.c"
         "subghz_parser.c"
         "screens/home_screen.c"

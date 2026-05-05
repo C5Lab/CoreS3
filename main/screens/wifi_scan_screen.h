@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MAX_NETWORKS 64
+#define MAX_NETWORKS 512
 
 typedef struct {
     uint8_t  index;

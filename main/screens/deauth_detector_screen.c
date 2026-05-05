@@ -3,6 +3,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "psram_dynarr.h"
 #include "esp_log.h"
 #include "bsp/m5stack_core_s3.h"
 #include <string.h>
@@ -11,7 +12,8 @@
 
 static const char *TAG = "deauth_det";
 
-#define MAX_DEAUTH_ENTRIES 100
+#define DEAUTH_HARD_CAP 2048
+#define DEAUTH_UI_ROWS  200
 #define COL_CH_W      30
 #define COL_RSSI_W    38
 #define COL_AP_W      110
@@ -26,8 +28,9 @@ typedef struct {
 } deauth_entry_t;
 
 /* ---------- Module state ---------- */
-static deauth_entry_t s_entries[MAX_DEAUTH_ENTRIES];
-static int            s_entry_count;
+static deauth_entry_t *s_entries;
+static int             s_entries_cap;
+static int             s_entry_count;
 static bool           s_running;
 
 static lv_obj_t      *s_list;          /* scrollable container for rows */
@@ -111,8 +114,13 @@ static void deauth_line_cb(const char *line)
     deauth_entry_t ent;
     if (!parse_deauth_line(line, &ent)) return;
 
-    /* Shift entries down (newest first) */
-    if (s_entry_count < MAX_DEAUTH_ENTRIES)
+    if (!psram_dynarr_ensure((void **)&s_entries, &s_entries_cap,
+                             (s_entry_count < DEAUTH_HARD_CAP ?
+                              s_entry_count + 1 : DEAUTH_HARD_CAP),
+                             sizeof(*s_entries), DEAUTH_HARD_CAP)) {
+        return;
+    }
+    if (s_entry_count < DEAUTH_HARD_CAP)
         s_entry_count++;
     for (int i = s_entry_count - 1; i > 0; i--)
         s_entries[i] = s_entries[i - 1];
@@ -133,7 +141,7 @@ static void deauth_line_cb(const char *line)
             lv_obj_get_child_count(s_list) - 1), 0);
 
         /* Remove excess rows from the bottom */
-        while (lv_obj_get_child_count(s_list) > MAX_DEAUTH_ENTRIES) {
+        while (lv_obj_get_child_count(s_list) > DEAUTH_UI_ROWS) {
             lv_obj_t *last = lv_obj_get_child(s_list,
                 lv_obj_get_child_count(s_list) - 1);
             lv_obj_delete(last);
