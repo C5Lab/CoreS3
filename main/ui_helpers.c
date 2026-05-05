@@ -89,6 +89,9 @@ lv_obj_t *ui_create_top_bar(lv_obj_t *parent, const char *title,
         lv_obj_set_style_bg_color(btn, UI_ACCENT_BLUE, 0);
         lv_obj_set_style_radius(btn, 6, 0);
         lv_obj_set_style_pad_all(btn, 0, 0);
+        /* Extend invisible touch area so the button is easy to hit with a finger,
+         * including the very top-left corner of the screen. */
+        lv_obj_set_ext_click_area(btn, 18);
         lv_obj_set_user_data(btn, user_data);
         lv_obj_add_event_cb(btn, on_back, LV_EVENT_CLICKED, user_data);
 

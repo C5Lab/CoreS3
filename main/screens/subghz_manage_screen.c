@@ -59,11 +59,35 @@ static void fill_signal(mgmt_signal_t *dst, const subghz_signal_info_t *src)
     snprintf(dst->mf, sizeof(dst->mf), "%s", src->mf[0] ? src->mf : "--");
 }
 
+/* Re-running subghz_import re-adds every .sub file on the SD card, so the
+ * firmware-side list grows with each import. Hide byte-for-byte duplicates
+ * (same type/freq/serial/btn/mf) from the UI; storage on JanOS is left intact
+ * until the user taps Clear All. */
+static bool is_duplicate_of_existing(const subghz_signal_info_t *p)
+{
+    int freq_x100 = (int)(p->freq * 100.0f + 0.5f);
+    const char *p_type   = p->type[0]   ? p->type   : "--";
+    const char *p_serial = p->serial[0] ? p->serial : "--";
+    const char *p_mf     = p->mf[0]     ? p->mf     : "--";
+
+    for (int j = 0; j < s_sig_count; j++) {
+        const mgmt_signal_t *e = &s_sigs[j];
+        int e_freq_x100 = (int)(e->freq * 100.0f + 0.5f);
+        if (e_freq_x100 != freq_x100) continue;
+        if (e->btn != p->btn) continue;
+        if (strcmp(e->type, p_type) != 0) continue;
+        if (strcmp(e->serial, p_serial) != 0) continue;
+        if (strcmp(e->mf, p_mf) != 0) continue;
+        return true;
+    }
+    return false;
+}
+
 static void rebuild_list_async(void *unused)
 {
     (void)unused;
     if (s_status_lbl) {
-        lv_label_set_text_fmt(s_status_lbl, "%d signals stored", s_sig_count);
+        lv_label_set_text_fmt(s_status_lbl, "%d signals (unique)", s_sig_count);
         lv_obj_set_style_text_color(s_status_lbl, ui_muted_color(), 0);
     }
     build_list();
@@ -76,6 +100,9 @@ static void on_list_received(const char **lines, int count)
         subghz_signal_info_t parsed;
 
         if (!subghz_parse_signal_line(lines[i], &parsed) || parsed.kind != SUBGHZ_SIGNAL_KIND_LIST)
+            continue;
+
+        if (parsed.idx > 0 && is_duplicate_of_existing(&parsed))
             continue;
 
         if (!psram_dynarr_ensure((void **)&s_sigs, &s_sig_cap,
