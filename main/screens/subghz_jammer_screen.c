@@ -38,8 +38,11 @@ static void on_freq_preset(lv_event_t *e)
 {
     float *freq = (float *)lv_event_get_user_data(e);
     s_freq_mhz = *freq;
-    if (s_freq_lbl)
-        lv_label_set_text_fmt(s_freq_lbl, "%.2f MHz", s_freq_mhz);
+    if (s_freq_lbl) {
+        int whole = (int)s_freq_mhz;
+        int frac  = ((int)(s_freq_mhz * 100.0f + 0.5f)) % 100;
+        lv_label_set_text_fmt(s_freq_lbl, "%d.%02d MHz", whole, frac);
+    }
     close_freq_popup();
 }
 
@@ -140,7 +143,8 @@ static void on_big_btn(lv_event_t *e)
     uart_send_command("subghz_jam");
 
     if (s_status_lbl) {
-        lv_label_set_text_fmt(s_status_lbl, "Jamming %.2f MHz...", s_freq_mhz);
+        lv_label_set_text_fmt(s_status_lbl, "Jamming %d.%02d MHz...",
+                              (int)s_freq_mhz, ((int)(s_freq_mhz * 100.0f + 0.5f)) % 100);
         lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_RED, 0);
     }
     if (s_big_btn)
@@ -188,7 +192,11 @@ void show_subghz_jammer_screen(void)
     lv_obj_set_y(s_freq_lbl, 50);
     lv_obj_set_style_text_font(s_freq_lbl, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_freq_lbl, UI_ACCENT_RED, 0);
-    lv_label_set_text_fmt(s_freq_lbl, "%.2f MHz", s_freq_mhz);
+    {
+        int whole = (int)s_freq_mhz;
+        int frac  = ((int)(s_freq_mhz * 100.0f + 0.5f)) % 100;
+        lv_label_set_text_fmt(s_freq_lbl, "%d.%02d MHz", whole, frac);
+    }
     lv_obj_center(s_freq_lbl);
     lv_obj_set_y(s_freq_lbl, 50);
     lv_obj_add_flag(s_freq_lbl, LV_OBJ_FLAG_CLICKABLE);

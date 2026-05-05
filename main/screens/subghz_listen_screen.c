@@ -1,5 +1,6 @@
 #include "subghz_listen_screen.h"
 #include "subghz_screen.h"
+#include "subghz_parser.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
@@ -14,20 +15,22 @@
 static const char *TAG = "subghz_listen";
 
 #define WATERFALL_W       320
-#define WATERFALL_H       60
+#define WATERFALL_H       40
 #define MAX_SIGNALS       64
 #define COL_IDX_W         22
-#define COL_TYPE_W        60
-#define COL_FREQ_W        55
-#define COL_ID_W          70
-#define COL_BITS_W        40
+#define COL_TYPE_W        50
+#define COL_FREQ_W        50
+#define COL_MF_W          90
+#define COL_SER_W         55
 
 typedef struct {
     int   idx;
-    char  type[16];
+    char  type[32];
     float freq;
-    char  id[24];
-    int   bits;
+    char  serial[32];
+    int   btn;
+    int   cnt;
+    char  mf[32];
     bool  is_raw;
 } subghz_signal_t;
 
@@ -37,6 +40,7 @@ static int             s_seen_idx[MAX_SIGNALS];
 static int             s_seen_count;
 static bool            s_running;
 static bool            s_raw_mode;
+static bool            s_signal_active;
 static float           s_freq_mhz = 433.92f;
 
 static lv_obj_t   *s_canvas;
@@ -44,31 +48,20 @@ static lv_color_t *s_canvas_buf;
 static lv_obj_t   *s_sig_list;
 static lv_obj_t   *s_sig_count_lbl;
 static lv_obj_t   *s_freq_lbl;
-static lv_obj_t   *s_btn_start;
-static lv_obj_t   *s_btn_stop;
+static lv_obj_t   *s_btn_start_stop;
 static lv_obj_t   *s_btn_raw;
 static lv_obj_t   *s_freq_popup;
 static lv_obj_t   *s_rollers[5];
 static lv_timer_t *s_kb_timer;
 
 static void on_back(lv_event_t *e);
-static void on_start(lv_event_t *e);
-static void on_stop(lv_event_t *e);
+static void on_start_stop(lv_event_t *e);
 static void on_raw_toggle(lv_event_t *e);
 static void on_freq_tap(lv_event_t *e);
 static void subghz_line_cb(const char *line);
 static void kb_poll_cb(lv_timer_t *t);
 static void add_signal_row(const subghz_signal_t *sig);
-
-static lv_color_t rssi_to_color(int rssi)
-{
-    if (rssi > -50)  return lv_color_hex(0xFF0000);
-    if (rssi > -70)  return lv_color_hex(0xCC0000);
-    if (rssi > -85)  return lv_color_hex(0x990000);
-    if (rssi > -95)  return lv_color_hex(0x550000);
-    if (rssi > -105) return lv_color_hex(0x2A0000);
-    return lv_color_hex(0x120000);
-}
+static void fill_signal(subghz_signal_t *dst, const subghz_signal_info_t *src);
 
 #define WF_BG_COLOR    0x0A1628
 #define WF_GRID_COLOR  0x152540
@@ -86,26 +79,23 @@ static void waterfall_fill_bg(void)
 
 static void waterfall_push_rssi(int rssi)
 {
+    (void)rssi;
     if (!s_canvas || !s_canvas_buf) return;
 
-    for (int y = 0; y < WATERFALL_H; y++) {
-        for (int x = 0; x < WATERFALL_W - 1; x++) {
+    for (int y = 0; y < WATERFALL_H; y++)
+        for (int x = 0; x < WATERFALL_W - 1; x++)
             s_canvas_buf[y * WATERFALL_W + x] = s_canvas_buf[y * WATERFALL_W + x + 1];
-        }
-    }
 
-    lv_color_t col = rssi_to_color(rssi);
-    int bar_h = WATERFALL_H;
-    if (rssi < -105) bar_h = 2;
-    else if (rssi < -95) bar_h = (int)(WATERFALL_H * 0.25f);
-    else if (rssi < -85) bar_h = (int)(WATERFALL_H * 0.5f);
-    else if (rssi < -70) bar_h = (int)(WATERFALL_H * 0.75f);
+    bool active = s_signal_active;
+    s_signal_active = false;
 
     lv_color_t bg   = lv_color_hex(WF_BG_COLOR);
     lv_color_t grid = lv_color_hex(WF_GRID_COLOR);
+    lv_color_t bar  = lv_color_hex(0xFF0000);
+
     for (int y = 0; y < WATERFALL_H; y++) {
-        if (y >= (WATERFALL_H - bar_h))
-            s_canvas_buf[y * WATERFALL_W + WATERFALL_W - 1] = col;
+        if (active)
+            s_canvas_buf[y * WATERFALL_W + WATERFALL_W - 1] = bar;
         else
             s_canvas_buf[y * WATERFALL_W + WATERFALL_W - 1] = (y % 10 == 0) ? grid : bg;
     }
@@ -113,51 +103,53 @@ static void waterfall_push_rssi(int rssi)
     lv_obj_invalidate(s_canvas);
 }
 
-static bool parse_subghz_rx(const char *line, subghz_signal_t *out)
+static void fill_signal(subghz_signal_t *dst, const subghz_signal_info_t *src)
 {
-    memset(out, 0, sizeof(*out));
-    if (strstr(line, "[SUBGHZ_RX] ") || strstr(line, "[SUBGHZ_RX_DUP] ")) {
-        out->is_raw = false;
-        const char *data = strstr(line, "] ");
-        if (!data) return false;
-        data += 2;
-        sscanf(data, "idx=%d type=%15s freq=%f id=%23s",
-               &out->idx, out->type, &out->freq, out->id);
-        return true;
-    }
-    if (strstr(line, "[SUBGHZ_RAW] ")) {
-        out->is_raw = true;
-        const char *data = strstr(line, "] ");
-        if (!data) return false;
-        data += 2;
-        sscanf(data, "idx=%d freq=%f edges=%d",
-               &out->idx, &out->freq, &out->bits);
-        snprintf(out->type, sizeof(out->type), "RAW");
-        snprintf(out->id, sizeof(out->id), "--");
-        return true;
-    }
-    return false;
+    memset(dst, 0, sizeof(*dst));
+    dst->idx = src->idx;
+    dst->freq = src->freq;
+    dst->btn = src->btn;
+    dst->cnt = src->cnt;
+    dst->is_raw = src->is_raw;
+    snprintf(dst->type, sizeof(dst->type), "%s", src->type[0] ? src->type : "--");
+    snprintf(dst->serial, sizeof(dst->serial), "%s", src->serial[0] ? src->serial : "--");
+    snprintf(dst->mf, sizeof(dst->mf), "%s", src->mf[0] ? src->mf : "--");
 }
 
 static void subghz_line_cb(const char *line)
 {
-    if (strstr(line, "[SUBGHZ_RSSI] ")) {
-        int rssi = atoi(line + 14);
+    int rssi;
+    subghz_signal_info_t parsed;
+
+    if (subghz_parse_rssi_line(line, &rssi)) {
         bsp_display_lock(0);
         waterfall_push_rssi(rssi);
         bsp_display_unlock();
         return;
     }
 
-    if (!s_raw_mode && strstr(line, "[SUBGHZ_RAW] "))
+    if (!subghz_parse_signal_line(line, &parsed))
         return;
 
-    if (s_raw_mode && strstr(line, "[SUBGHZ_RX_DUP] "))
+    if (parsed.kind == SUBGHZ_SIGNAL_KIND_LIST)
         return;
 
-    subghz_signal_t sig;
-    if (parse_subghz_rx(line, &sig)) {
+    if (parsed.kind == SUBGHZ_SIGNAL_KIND_RX ||
+        parsed.kind == SUBGHZ_SIGNAL_KIND_RX_DUP ||
+        parsed.kind == SUBGHZ_SIGNAL_KIND_RAW)
+        s_signal_active = true;
+
+    if (!s_raw_mode && parsed.kind == SUBGHZ_SIGNAL_KIND_RAW)
+        return;
+
+    if (s_raw_mode && parsed.kind == SUBGHZ_SIGNAL_KIND_RX_DUP)
+        return;
+
+    {
+        subghz_signal_t sig;
         bool already_seen = false;
+
+        fill_signal(&sig, &parsed);
         for (int i = 0; i < s_seen_count; i++) {
             if (s_seen_idx[i] == sig.idx) { already_seen = true; break; }
         }
@@ -211,23 +203,21 @@ static void add_signal_row(const subghz_signal_t *sig)
     lv_obj_set_width(l, COL_FREQ_W);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-    lv_label_set_text_fmt(l, "%.2f", sig->freq);
+    lv_label_set_text_fmt(l, "%d.%02d", (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100);
 
     l = lv_label_create(row);
-    lv_obj_set_width(l, COL_ID_W);
+    lv_obj_set_width(l, COL_MF_W);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(l, ui_text_color(), 0);
     lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-    lv_label_set_text(l, sig->id);
+    lv_label_set_text(l, sig->mf[0] ? sig->mf : "--");
 
     l = lv_label_create(row);
-    lv_obj_set_width(l, COL_BITS_W);
+    lv_obj_set_width(l, COL_SER_W);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-    if (sig->is_raw)
-        lv_label_set_text_fmt(l, "%de", sig->bits);
-    else
-        lv_label_set_text_fmt(l, "%d", sig->bits);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(l, sig->serial[0] ? sig->serial : "--");
 }
 
 static void close_freq_popup(void)
@@ -240,8 +230,11 @@ static void close_freq_popup(void)
 
 static void update_freq_label(void)
 {
-    if (s_freq_lbl)
-        lv_label_set_text_fmt(s_freq_lbl, "%.2f MHz", s_freq_mhz);
+    if (s_freq_lbl) {
+        int whole = (int)s_freq_mhz;
+        int frac  = ((int)(s_freq_mhz * 100.0f + 0.5f)) % 100;
+        lv_label_set_text_fmt(s_freq_lbl, "%d.%02d MHz", whole, frac);
+    }
 }
 
 static void on_freq_set(lv_event_t *e)
@@ -366,6 +359,19 @@ static void on_freq_tap(lv_event_t *e)
     lv_obj_center(cl);
 }
 
+static void update_start_stop_btn(void)
+{
+    if (!s_btn_start_stop) return;
+    lv_obj_t *lbl = lv_obj_get_child(s_btn_start_stop, 0);
+    if (s_running) {
+        lv_obj_set_style_bg_color(s_btn_start_stop, UI_ACCENT_RED, 0);
+        if (lbl) lv_label_set_text(lbl, LV_SYMBOL_STOP " Stop");
+    } else {
+        lv_obj_set_style_bg_color(s_btn_start_stop, UI_ACCENT_GREEN, 0);
+        if (lbl) lv_label_set_text(lbl, LV_SYMBOL_PLAY " Start");
+    }
+}
+
 static void stop_listening(void)
 {
     if (!s_running) return;
@@ -373,20 +379,23 @@ static void stop_listening(void)
     uart_send_command("subghz_stop");
     uart_set_line_callback(NULL);
 
-    if (s_btn_start) lv_obj_clear_state(s_btn_start, LV_STATE_DISABLED);
-    if (s_btn_stop)  lv_obj_add_state(s_btn_stop, LV_STATE_DISABLED);
-    if (s_btn_raw)   lv_obj_clear_state(s_btn_raw, LV_STATE_DISABLED);
+    update_start_stop_btn();
+    if (s_btn_raw) lv_obj_clear_state(s_btn_raw, LV_STATE_DISABLED);
     ESP_LOGI(TAG, "SubGHz listen stopped");
 }
 
-static void on_start(lv_event_t *e)
+static void on_start_stop(lv_event_t *e)
 {
     (void)e;
-    if (s_running) return;
+    if (s_running) {
+        stop_listening();
+        return;
+    }
     s_running = true;
 
-    s_signal_count = 0;
-    s_seen_count   = 0;
+    s_signal_count  = 0;
+    s_seen_count    = 0;
+    s_signal_active = false;
     if (s_sig_list) lv_obj_clean(s_sig_list);
     if (s_sig_count_lbl) lv_label_set_text(s_sig_count_lbl, "Sig: 0");
 
@@ -395,9 +404,8 @@ static void on_start(lv_event_t *e)
         if (s_canvas) lv_obj_invalidate(s_canvas);
     }
 
-    lv_obj_add_state(s_btn_start, LV_STATE_DISABLED);
-    lv_obj_clear_state(s_btn_stop, LV_STATE_DISABLED);
-    lv_obj_add_state(s_btn_raw, LV_STATE_DISABLED);
+    update_start_stop_btn();
+    if (s_btn_raw) lv_obj_add_state(s_btn_raw, LV_STATE_DISABLED);
 
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "subghz_freq %.2f", s_freq_mhz);
@@ -411,12 +419,6 @@ static void on_start(lv_event_t *e)
         uart_send_command("subghz_rx");
 
     ESP_LOGI(TAG, "SubGHz listen started (%.2f MHz, raw=%d)", s_freq_mhz, s_raw_mode);
-}
-
-static void on_stop(lv_event_t *e)
-{
-    (void)e;
-    stop_listening();
 }
 
 static void on_raw_toggle(lv_event_t *e)
@@ -463,8 +465,7 @@ void show_subghz_listen_screen(void)
     s_sig_list     = NULL;
     s_sig_count_lbl = NULL;
     s_freq_lbl     = NULL;
-    s_btn_start    = NULL;
-    s_btn_stop     = NULL;
+    s_btn_start_stop = NULL;
     s_btn_raw      = NULL;
     s_freq_popup   = NULL;
     s_kb_timer     = NULL;
@@ -475,12 +476,32 @@ void show_subghz_listen_screen(void)
     /* Top bar with freq label */
     lv_obj_t *bar = ui_create_top_bar(scr, "Listen", on_back, NULL);
 
-    s_freq_lbl = lv_label_create(bar);
-    lv_label_set_text_fmt(s_freq_lbl, "%.2f MHz", s_freq_mhz);
+    lv_obj_t *title_lbl = lv_obj_get_child(bar, 1);
+    lv_obj_set_flex_grow(title_lbl, 0);
+
+    lv_obj_t *spacer = lv_obj_create(bar);
+    lv_obj_set_flex_grow(spacer, 1);
+    lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(spacer, 0, 0);
+    lv_obj_set_height(spacer, 1);
+
+    lv_obj_t *freq_btn = lv_btn_create(bar);
+    lv_obj_set_size(freq_btn, LV_SIZE_CONTENT, 28);
+    lv_obj_set_style_bg_color(freq_btn, ui_card_color(), 0);
+    lv_obj_set_style_bg_color(freq_btn, ui_card_pressed_color(), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(freq_btn, 6, 0);
+    lv_obj_set_style_pad_hor(freq_btn, 8, 0);
+    lv_obj_add_event_cb(freq_btn, on_freq_tap, LV_EVENT_CLICKED, NULL);
+
+    s_freq_lbl = lv_label_create(freq_btn);
+    {
+        int whole = (int)s_freq_mhz;
+        int frac  = ((int)(s_freq_mhz * 100.0f + 0.5f)) % 100;
+        lv_label_set_text_fmt(s_freq_lbl, "%d.%02d MHz", whole, frac);
+    }
     lv_obj_set_style_text_color(s_freq_lbl, UI_ACCENT_PINK, 0);
     lv_obj_set_style_text_font(s_freq_lbl, &lv_font_montserrat_12, 0);
-    lv_obj_add_flag(s_freq_lbl, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_freq_lbl, on_freq_tap, LV_EVENT_CLICKED, NULL);
+    lv_obj_center(s_freq_lbl);
 
     /* Control bar */
     lv_obj_t *ctrl = lv_obj_create(scr);
@@ -493,26 +514,15 @@ void show_subghz_listen_screen(void)
     lv_obj_set_style_border_width(ctrl, 0, 0);
     lv_obj_set_style_pad_all(ctrl, 2, 0);
 
-    s_btn_start = lv_btn_create(ctrl);
-    lv_obj_set_size(s_btn_start, 60, 24);
-    lv_obj_set_style_bg_color(s_btn_start, UI_ACCENT_GREEN, 0);
-    lv_obj_set_style_radius(s_btn_start, 5, 0);
-    lv_obj_add_event_cb(s_btn_start, on_start, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *sl = lv_label_create(s_btn_start);
+    s_btn_start_stop = lv_btn_create(ctrl);
+    lv_obj_set_size(s_btn_start_stop, 60, 24);
+    lv_obj_set_style_bg_color(s_btn_start_stop, UI_ACCENT_GREEN, 0);
+    lv_obj_set_style_radius(s_btn_start_stop, 5, 0);
+    lv_obj_add_event_cb(s_btn_start_stop, on_start_stop, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sl = lv_label_create(s_btn_start_stop);
     lv_label_set_text(sl, LV_SYMBOL_PLAY " Start");
     lv_obj_set_style_text_font(sl, &lv_font_montserrat_10, 0);
     lv_obj_center(sl);
-
-    s_btn_stop = lv_btn_create(ctrl);
-    lv_obj_set_size(s_btn_stop, 60, 24);
-    lv_obj_set_style_bg_color(s_btn_stop, UI_ACCENT_RED, 0);
-    lv_obj_set_style_radius(s_btn_stop, 5, 0);
-    lv_obj_add_event_cb(s_btn_stop, on_stop, LV_EVENT_CLICKED, NULL);
-    lv_obj_add_state(s_btn_stop, LV_STATE_DISABLED);
-    lv_obj_t *tl = lv_label_create(s_btn_stop);
-    lv_label_set_text(tl, LV_SYMBOL_STOP " Stop");
-    lv_obj_set_style_text_font(tl, &lv_font_montserrat_10, 0);
-    lv_obj_center(tl);
 
     s_btn_raw = lv_btn_create(ctrl);
     lv_obj_set_size(s_btn_raw, 40, 24);
@@ -541,14 +551,14 @@ void show_subghz_listen_screen(void)
         waterfall_fill_bg();
 
         s_canvas = lv_canvas_create(scr);
-        lv_canvas_set_buffer(s_canvas, s_canvas_buf, WATERFALL_W, WATERFALL_H, LV_COLOR_FORMAT_NATIVE);
+        lv_canvas_set_buffer(s_canvas, s_canvas_buf, WATERFALL_W, WATERFALL_H, LV_COLOR_FORMAT_RGB888);
         lv_obj_set_pos(s_canvas, 0, 66);
     }
 
     /* Signal table header */
     lv_obj_t *hdr = lv_obj_create(scr);
     lv_obj_set_size(hdr, LV_PCT(100), 14);
-    lv_obj_set_y(hdr, 128);
+    lv_obj_set_y(hdr, 108);
     lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(hdr, 1, 0);
     lv_obj_set_style_pad_gap(hdr, 2, 0);
@@ -558,7 +568,7 @@ void show_subghz_listen_screen(void)
 
     static const struct { const char *t; int w; } cols[] = {
         {"#", COL_IDX_W}, {"Type", COL_TYPE_W}, {"Freq", COL_FREQ_W},
-        {"ID", COL_ID_W}, {"Bits", COL_BITS_W},
+        {"Signal", COL_MF_W}, {"Serial", COL_SER_W},
     };
     for (int i = 0; i < 5; i++) {
         lv_obj_t *l = lv_label_create(hdr);
@@ -570,8 +580,8 @@ void show_subghz_listen_screen(void)
 
     /* Signal list */
     s_sig_list = lv_obj_create(scr);
-    lv_obj_set_size(s_sig_list, LV_PCT(100), 240 - 142);
-    lv_obj_set_y(s_sig_list, 142);
+    lv_obj_set_size(s_sig_list, LV_PCT(100), 240 - 122);
+    lv_obj_set_y(s_sig_list, 122);
     lv_obj_set_flex_flow(s_sig_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(s_sig_list, 2, 0);
     lv_obj_set_style_pad_gap(s_sig_list, 1, 0);

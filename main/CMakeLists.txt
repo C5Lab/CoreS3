@@ -4,6 +4,7 @@ idf_component_register(
         "uart_handler.c"
         "ui_helpers.c"
         "cardkb.c"
+        "subghz_parser.c"
         "screens/home_screen.c"
         "screens/wifi_scan_screen.c"
         "screens/attack_select_screen.c"

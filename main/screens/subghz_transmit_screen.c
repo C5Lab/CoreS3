@@ -1,5 +1,6 @@
 #include "subghz_transmit_screen.h"
 #include "subghz_screen.h"
+#include "subghz_parser.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
@@ -15,10 +16,12 @@ static const char *TAG = "subghz_tx";
 
 typedef struct {
     int   idx;
-    char  type[16];
+    char  type[32];
     float freq;
-    char  id[24];
-    int   bits;
+    char  serial[32];
+    int   btn;
+    int   cnt;
+    char  mf[32];
 } tx_signal_t;
 
 static tx_signal_t  s_sigs[MAX_TX_SIGNALS];
@@ -34,19 +37,32 @@ static void kb_poll_cb(lv_timer_t *t);
 
 static void build_list(void);
 static void on_signal_tap(lv_event_t *e);
+static void fill_signal(tx_signal_t *dst, const subghz_signal_info_t *src);
+
+static void fill_signal(tx_signal_t *dst, const subghz_signal_info_t *src)
+{
+    memset(dst, 0, sizeof(*dst));
+    dst->idx = src->idx;
+    dst->freq = src->freq;
+    dst->btn = src->btn;
+    dst->cnt = src->cnt;
+    snprintf(dst->type, sizeof(dst->type), "%s", src->type[0] ? src->type : "--");
+    snprintf(dst->serial, sizeof(dst->serial), "%s", src->serial[0] ? src->serial : "--");
+    snprintf(dst->mf, sizeof(dst->mf), "%s", src->mf[0] ? src->mf : "--");
+}
 
 static void on_list_received(const char **lines, int count)
 {
     s_sig_count = 0;
     for (int i = 0; i < count && s_sig_count < MAX_TX_SIGNALS; i++) {
-        const char *prefix = strstr(lines[i], "[SUBGHZ_LIST] ");
-        if (!prefix) continue;
-        const char *data = prefix + 14;
+        subghz_signal_info_t parsed;
+
+        if (!subghz_parse_signal_line(lines[i], &parsed) || parsed.kind != SUBGHZ_SIGNAL_KIND_LIST)
+            continue;
 
         tx_signal_t *s = &s_sigs[s_sig_count];
-        memset(s, 0, sizeof(*s));
-        if (sscanf(data, "idx=%d type=%15s freq=%f bits=%d id=%23s",
-                   &s->idx, s->type, &s->freq, &s->bits, s->id) >= 3) {
+        fill_signal(s, &parsed);
+        if (s->idx > 0) {
             s_sig_count++;
         }
     }
@@ -106,14 +122,14 @@ static void build_list(void)
         lv_obj_set_width(l, 50);
         lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
         lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-        lv_label_set_text_fmt(l, "%.2f", sig->freq);
+        lv_label_set_text_fmt(l, "%d.%02d", (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100);
 
         l = lv_label_create(row);
         lv_obj_set_flex_grow(l, 1);
         lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
         lv_obj_set_style_text_color(l, UI_ACCENT_CYAN, 0);
         lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-        lv_label_set_text(l, sig->id);
+        lv_label_set_text(l, sig->mf[0] ? sig->mf : sig->serial);
 
         l = lv_label_create(row);
         lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
@@ -182,8 +198,10 @@ static void on_signal_tap(lv_event_t *e)
 
     lv_obj_t *info = lv_label_create(s_tx_popup);
     if (sig)
-        lv_label_set_text_fmt(info, "#%d  %s  %.2f MHz\nID: %s",
-                              sig->idx, sig->type, sig->freq, sig->id);
+        lv_label_set_text_fmt(info, "#%d  %s  %d.%02d MHz\n%s  %s",
+                              sig->idx, sig->type,
+                              (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100,
+                              sig->mf[0] ? sig->mf : "--", sig->serial);
     else
         lv_label_set_text_fmt(info, "Signal #%d", idx);
     lv_obj_set_style_text_color(info, ui_text_color(), 0);
