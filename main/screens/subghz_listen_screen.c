@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,10 @@ static const char *TAG = "subghz_listen";
 
 #define WATERFALL_W       320
 #define WATERFALL_H       40
-#define MAX_SIGNALS       64
+#define WATERFALL_TICK_MS 120
+#define SIGNAL_CHUNK_CAPACITY 64
+#define SIGNAL_ROW_HEIGHT 18
+#define SIGNAL_ROW_POOL_SIZE 10
 #define COL_IDX_W         22
 #define COL_TYPE_W        50
 #define COL_FREQ_W        50
@@ -34,25 +38,48 @@ typedef struct {
     bool  is_raw;
 } subghz_signal_t;
 
-static subghz_signal_t s_signals[MAX_SIGNALS];
-static int             s_signal_count;
-static int             s_seen_idx[MAX_SIGNALS];
-static int             s_seen_count;
-static bool            s_running;
+typedef struct subghz_signal_chunk {
+    struct subghz_signal_chunk *next;
+    size_t used;
+    subghz_signal_t items[SIGNAL_CHUNK_CAPACITY];
+} subghz_signal_chunk_t;
+
+typedef struct {
+    lv_obj_t *row;
+    lv_obj_t *idx;
+    lv_obj_t *type;
+    lv_obj_t *freq;
+    lv_obj_t *mf;
+    lv_obj_t *serial;
+} signal_row_view_t;
+
+static subghz_signal_chunk_t *s_signal_head;
+static subghz_signal_chunk_t *s_signal_tail;
+static subghz_signal_t       *s_last_signal;
+static size_t                 s_signal_count;
+static volatile bool          s_running;
 static bool            s_raw_mode;
-static bool            s_signal_active;
+static bool            s_follow_latest;
+static volatile bool   s_history_dirty;
+static volatile bool   s_activity_pending;
+static volatile bool   s_psram_exhausted;
 static float           s_freq_mhz = 433.92f;
+static portMUX_TYPE    s_signal_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static lv_obj_t   *s_canvas;
 static lv_color_t *s_canvas_buf;
 static lv_obj_t   *s_sig_list;
+static lv_obj_t   *s_sig_spacer;
+static lv_obj_t   *s_empty_lbl;
 static lv_obj_t   *s_sig_count_lbl;
 static lv_obj_t   *s_freq_lbl;
 static lv_obj_t   *s_btn_start_stop;
 static lv_obj_t   *s_btn_raw;
 static lv_obj_t   *s_freq_popup;
 static lv_obj_t   *s_rollers[5];
+static signal_row_view_t s_row_pool[SIGNAL_ROW_POOL_SIZE];
 static lv_timer_t *s_kb_timer;
+static lv_timer_t *s_ui_timer;
 
 static void on_back(lv_event_t *e);
 static void on_start_stop(lv_event_t *e);
@@ -60,8 +87,24 @@ static void on_raw_toggle(lv_event_t *e);
 static void on_freq_tap(lv_event_t *e);
 static void subghz_line_cb(const char *line);
 static void kb_poll_cb(lv_timer_t *t);
-static void add_signal_row(const subghz_signal_t *sig);
+static void ui_tick_cb(lv_timer_t *t);
+static void on_signal_list_scroll(lv_event_t *e);
+static void refresh_signal_list_view(void);
+static void reset_capture_session(void);
+static void clear_signal_history(void);
 static void fill_signal(subghz_signal_t *dst, const subghz_signal_info_t *src);
+static bool merge_duplicate_signal(const subghz_signal_info_t *src);
+
+static size_t signal_count_snapshot(void)
+{
+    size_t count;
+
+    portENTER_CRITICAL(&s_signal_lock);
+    count = s_signal_count;
+    portEXIT_CRITICAL(&s_signal_lock);
+
+    return count;
+}
 
 #define WF_BG_COLOR    0x0A1628
 #define WF_GRID_COLOR  0x152540
@@ -77,17 +120,13 @@ static void waterfall_fill_bg(void)
     }
 }
 
-static void waterfall_push_rssi(int rssi)
+static void waterfall_push_activity(bool active)
 {
-    (void)rssi;
     if (!s_canvas || !s_canvas_buf) return;
 
     for (int y = 0; y < WATERFALL_H; y++)
         for (int x = 0; x < WATERFALL_W - 1; x++)
             s_canvas_buf[y * WATERFALL_W + x] = s_canvas_buf[y * WATERFALL_W + x + 1];
-
-    bool active = s_signal_active;
-    s_signal_active = false;
 
     lv_color_t bg   = lv_color_hex(WF_BG_COLOR);
     lv_color_t grid = lv_color_hex(WF_GRID_COLOR);
@@ -116,17 +155,288 @@ static void fill_signal(subghz_signal_t *dst, const subghz_signal_info_t *src)
     snprintf(dst->mf, sizeof(dst->mf), "%s", src->mf[0] ? src->mf : "--");
 }
 
-static void subghz_line_cb(const char *line)
+static subghz_signal_chunk_t *alloc_signal_chunk(void)
 {
-    int rssi;
-    subghz_signal_info_t parsed;
+    subghz_signal_chunk_t *chunk = heap_caps_malloc(sizeof(*chunk),
+                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!chunk)
+        return NULL;
 
-    if (subghz_parse_rssi_line(line, &rssi)) {
-        bsp_display_lock(0);
-        waterfall_push_rssi(rssi);
-        bsp_display_unlock();
+    memset(chunk, 0, sizeof(*chunk));
+    return chunk;
+}
+
+static bool append_signal_history(const subghz_signal_t *sig)
+{
+    subghz_signal_chunk_t *new_chunk = NULL;
+    subghz_signal_t *inserted;
+
+    if (!sig)
+        return false;
+
+    if (!s_signal_tail || s_signal_tail->used >= SIGNAL_CHUNK_CAPACITY) {
+        new_chunk = alloc_signal_chunk();
+        if (!new_chunk) {
+            if (!s_psram_exhausted)
+                ESP_LOGE(TAG, "PSRAM exhausted while storing captured signals");
+            s_psram_exhausted = true;
+            s_history_dirty = true;
+            return false;
+        }
+    }
+
+    portENTER_CRITICAL(&s_signal_lock);
+    if (!s_signal_head) {
+        s_signal_head = new_chunk;
+        s_signal_tail = new_chunk;
+        new_chunk = NULL;
+    } else if (new_chunk) {
+        s_signal_tail->next = new_chunk;
+        s_signal_tail = new_chunk;
+        new_chunk = NULL;
+    }
+
+    inserted = &s_signal_tail->items[s_signal_tail->used++];
+    *inserted = *sig;
+    s_last_signal = inserted;
+    s_signal_count++;
+    portEXIT_CRITICAL(&s_signal_lock);
+
+    if (new_chunk)
+        free(new_chunk);
+
+    s_history_dirty = true;
+    return true;
+}
+
+static bool merge_duplicate_signal(const subghz_signal_info_t *src)
+{
+    bool merged = false;
+
+    if (!src || !src->is_duplicate)
+        return false;
+
+    portENTER_CRITICAL(&s_signal_lock);
+    if (s_last_signal && !s_last_signal->is_raw) {
+        if ((src->idx > 0 && s_last_signal->idx == src->idx) ||
+            (strcmp(s_last_signal->type, src->type) == 0 &&
+             strcmp(s_last_signal->serial, src->serial) == 0 &&
+             s_last_signal->btn == src->btn)) {
+            if (src->cnt > 0)
+                s_last_signal->cnt = src->cnt;
+            merged = true;
+        }
+    }
+    portEXIT_CRITICAL(&s_signal_lock);
+
+    if (merged)
+        s_history_dirty = true;
+
+    return merged;
+}
+
+static void clear_signal_history(void)
+{
+    subghz_signal_chunk_t *head;
+
+    portENTER_CRITICAL(&s_signal_lock);
+    head = s_signal_head;
+    s_signal_head = NULL;
+    s_signal_tail = NULL;
+    s_last_signal = NULL;
+    s_signal_count = 0;
+    portEXIT_CRITICAL(&s_signal_lock);
+
+    while (head) {
+        subghz_signal_chunk_t *next = head->next;
+        free(head);
+        head = next;
+    }
+}
+
+static void copy_signal_window(size_t first_index, subghz_signal_t *out,
+                               size_t max_items, size_t *out_count,
+                               size_t *out_total)
+{
+    size_t copied = 0;
+    size_t base = 0;
+    subghz_signal_chunk_t *chunk;
+    size_t offset;
+
+    portENTER_CRITICAL(&s_signal_lock);
+    if (out_total)
+        *out_total = s_signal_count;
+
+    chunk = s_signal_head;
+    while (chunk && first_index >= base + chunk->used) {
+        base += chunk->used;
+        chunk = chunk->next;
+    }
+
+    offset = first_index - base;
+    while (chunk && copied < max_items) {
+        while (offset < chunk->used && copied < max_items) {
+            out[copied++] = chunk->items[offset++];
+        }
+        chunk = chunk->next;
+        offset = 0;
+    }
+    portEXIT_CRITICAL(&s_signal_lock);
+
+    if (out_count)
+        *out_count = copied;
+}
+
+static void update_signal_count_label(size_t count)
+{
+    if (!s_sig_count_lbl)
+        return;
+
+    if (s_psram_exhausted) {
+        lv_label_set_text_fmt(s_sig_count_lbl, "Sig: %lu MEM", (unsigned long)count);
+        lv_obj_set_style_text_color(s_sig_count_lbl, UI_ACCENT_RED, 0);
+    } else {
+        lv_label_set_text_fmt(s_sig_count_lbl, "Sig: %lu", (unsigned long)count);
+        lv_obj_set_style_text_color(s_sig_count_lbl, UI_ACCENT_CYAN, 0);
+    }
+}
+
+static void configure_signal_row(signal_row_view_t *view)
+{
+    if (!view || !s_sig_list)
+        return;
+
+    view->row = lv_obj_create(s_sig_list);
+    lv_obj_set_size(view->row, LV_PCT(100), SIGNAL_ROW_HEIGHT - 1);
+    lv_obj_set_style_pad_all(view->row, 1, 0);
+    lv_obj_set_style_pad_gap(view->row, 2, 0);
+    lv_obj_set_style_bg_color(view->row, ui_card_color(), 0);
+    lv_obj_set_style_bg_opa(view->row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(view->row, 0, 0);
+    lv_obj_set_style_radius(view->row, 3, 0);
+    lv_obj_set_style_min_height(view->row, SIGNAL_ROW_HEIGHT - 1, 0);
+    lv_obj_set_flex_flow(view->row, LV_FLEX_FLOW_ROW);
+    lv_obj_clear_flag(view->row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(view->row, LV_OBJ_FLAG_HIDDEN);
+
+    view->idx = lv_label_create(view->row);
+    lv_obj_set_width(view->idx, COL_IDX_W);
+    lv_obj_set_style_text_font(view->idx, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->idx, UI_ACCENT_CYAN, 0);
+
+    view->type = lv_label_create(view->row);
+    lv_obj_set_width(view->type, COL_TYPE_W);
+    lv_obj_set_style_text_font(view->type, &lv_font_montserrat_10, 0);
+    lv_label_set_long_mode(view->type, LV_LABEL_LONG_CLIP);
+
+    view->freq = lv_label_create(view->row);
+    lv_obj_set_width(view->freq, COL_FREQ_W);
+    lv_obj_set_style_text_font(view->freq, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->freq, ui_muted_color(), 0);
+
+    view->mf = lv_label_create(view->row);
+    lv_obj_set_width(view->mf, COL_MF_W);
+    lv_obj_set_style_text_font(view->mf, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->mf, ui_text_color(), 0);
+    lv_label_set_long_mode(view->mf, LV_LABEL_LONG_CLIP);
+
+    view->serial = lv_label_create(view->row);
+    lv_obj_set_width(view->serial, COL_SER_W);
+    lv_obj_set_style_text_font(view->serial, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->serial, ui_muted_color(), 0);
+    lv_label_set_long_mode(view->serial, LV_LABEL_LONG_CLIP);
+}
+
+static void refresh_signal_list_view(void)
+{
+    subghz_signal_t window[SIGNAL_ROW_POOL_SIZE];
+    size_t copied = 0;
+    size_t total = 0;
+    lv_coord_t scroll_y;
+    size_t first_index;
+
+    if (!s_sig_list || !s_sig_spacer || !s_empty_lbl)
+        return;
+
+    scroll_y = lv_obj_get_scroll_y(s_sig_list);
+    if (scroll_y < 0)
+        scroll_y = 0;
+
+    first_index = (size_t)scroll_y / SIGNAL_ROW_HEIGHT;
+    copy_signal_window(first_index, window, SIGNAL_ROW_POOL_SIZE, &copied, &total);
+
+    update_signal_count_label(total);
+
+    if (total == 0) {
+        lv_obj_clear_flag(s_empty_lbl, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_sig_spacer, 1);
+        for (int i = 0; i < SIGNAL_ROW_POOL_SIZE; i++) {
+            if (s_row_pool[i].row)
+                lv_obj_add_flag(s_row_pool[i].row, LV_OBJ_FLAG_HIDDEN);
+        }
         return;
     }
+
+    lv_obj_add_flag(s_empty_lbl, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_height(s_sig_spacer, (lv_coord_t)(total * SIGNAL_ROW_HEIGHT));
+
+    for (int i = 0; i < SIGNAL_ROW_POOL_SIZE; i++) {
+        signal_row_view_t *view = &s_row_pool[i];
+
+        if (!view->row)
+            continue;
+
+        if ((size_t)i >= copied) {
+            lv_obj_add_flag(view->row, LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+
+        size_t signal_index = first_index + (size_t)i;
+        const subghz_signal_t *sig = &window[i];
+
+        lv_obj_set_pos(view->row, 0, (lv_coord_t)(signal_index * SIGNAL_ROW_HEIGHT));
+        lv_label_set_text_fmt(view->idx, "%d", sig->idx);
+        lv_label_set_text(view->type, sig->type);
+        lv_obj_set_style_text_color(view->type,
+                                    sig->is_raw ? UI_ACCENT_ORANGE : UI_ACCENT_GREEN, 0);
+        lv_label_set_text_fmt(view->freq, "%d.%02d",
+                              (int)sig->freq,
+                              ((int)(sig->freq * 100.0f + 0.5f)) % 100);
+        lv_label_set_text(view->mf, sig->mf[0] ? sig->mf : "--");
+        lv_label_set_text(view->serial, sig->serial[0] ? sig->serial : "--");
+        lv_obj_clear_flag(view->row, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void reset_capture_session(void)
+{
+    s_follow_latest = true;
+    s_activity_pending = false;
+    s_history_dirty = true;
+    s_psram_exhausted = false;
+    clear_signal_history();
+
+    if (s_sig_list)
+        lv_obj_scroll_to_y(s_sig_list, 0, LV_ANIM_OFF);
+
+    if (s_canvas_buf) {
+        waterfall_fill_bg();
+        if (s_canvas)
+            lv_obj_invalidate(s_canvas);
+    }
+
+    refresh_signal_list_view();
+}
+
+static void subghz_line_cb(const char *line)
+{
+    subghz_signal_info_t parsed;
+
+    if (!s_running)
+        return;
+
+    if (subghz_parse_rssi_line(line, &(int){0}))
+        return;
 
     if (!subghz_parse_signal_line(line, &parsed))
         return;
@@ -137,7 +447,7 @@ static void subghz_line_cb(const char *line)
     if (parsed.kind == SUBGHZ_SIGNAL_KIND_RX ||
         parsed.kind == SUBGHZ_SIGNAL_KIND_RX_DUP ||
         parsed.kind == SUBGHZ_SIGNAL_KIND_RAW)
-        s_signal_active = true;
+        s_activity_pending = true;
 
     if (!s_raw_mode && parsed.kind == SUBGHZ_SIGNAL_KIND_RAW)
         return;
@@ -145,79 +455,15 @@ static void subghz_line_cb(const char *line)
     if (s_raw_mode && parsed.kind == SUBGHZ_SIGNAL_KIND_RX_DUP)
         return;
 
+    if (merge_duplicate_signal(&parsed))
+        return;
+
     {
         subghz_signal_t sig;
-        bool already_seen = false;
 
         fill_signal(&sig, &parsed);
-        for (int i = 0; i < s_seen_count; i++) {
-            if (s_seen_idx[i] == sig.idx) { already_seen = true; break; }
-        }
-        if (already_seen) return;
-
-        if (s_seen_count < MAX_SIGNALS)
-            s_seen_idx[s_seen_count++] = sig.idx;
-
-        if (s_signal_count < MAX_SIGNALS)
-            s_signals[s_signal_count++] = sig;
-
-        bsp_display_lock(0);
-        if (s_sig_count_lbl)
-            lv_label_set_text_fmt(s_sig_count_lbl, "Sig: %d", s_signal_count);
-        add_signal_row(&sig);
-        bsp_display_unlock();
+        append_signal_history(&sig);
     }
-}
-
-static void add_signal_row(const subghz_signal_t *sig)
-{
-    if (!s_sig_list) return;
-
-    lv_obj_t *row = lv_obj_create(s_sig_list);
-    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(row, 1, 0);
-    lv_obj_set_style_pad_gap(row, 2, 0);
-    lv_obj_set_style_bg_color(row, ui_card_color(), 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_radius(row, 3, 0);
-    lv_obj_set_style_min_height(row, 16, 0);
-
-    lv_obj_t *l;
-
-    l = lv_label_create(row);
-    lv_obj_set_width(l, COL_IDX_W);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(l, UI_ACCENT_CYAN, 0);
-    lv_label_set_text_fmt(l, "%d", sig->idx);
-
-    l = lv_label_create(row);
-    lv_obj_set_width(l, COL_TYPE_W);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(l, sig->is_raw ? UI_ACCENT_ORANGE : UI_ACCENT_GREEN, 0);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-    lv_label_set_text(l, sig->type);
-
-    l = lv_label_create(row);
-    lv_obj_set_width(l, COL_FREQ_W);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-    lv_label_set_text_fmt(l, "%d.%02d", (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100);
-
-    l = lv_label_create(row);
-    lv_obj_set_width(l, COL_MF_W);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(l, ui_text_color(), 0);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-    lv_label_set_text(l, sig->mf[0] ? sig->mf : "--");
-
-    l = lv_label_create(row);
-    lv_obj_set_width(l, COL_SER_W);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-    lv_label_set_text(l, sig->serial[0] ? sig->serial : "--");
 }
 
 static void close_freq_popup(void)
@@ -378,6 +624,7 @@ static void stop_listening(void)
     s_running = false;
     uart_send_command("subghz_stop");
     uart_set_line_callback(NULL);
+    s_activity_pending = false;
 
     update_start_stop_btn();
     if (s_btn_raw) lv_obj_clear_state(s_btn_raw, LV_STATE_DISABLED);
@@ -391,18 +638,10 @@ static void on_start_stop(lv_event_t *e)
         stop_listening();
         return;
     }
+
+    uart_stop_collect();
+    reset_capture_session();
     s_running = true;
-
-    s_signal_count  = 0;
-    s_seen_count    = 0;
-    s_signal_active = false;
-    if (s_sig_list) lv_obj_clean(s_sig_list);
-    if (s_sig_count_lbl) lv_label_set_text(s_sig_count_lbl, "Sig: 0");
-
-    if (s_canvas_buf) {
-        waterfall_fill_bg();
-        if (s_canvas) lv_obj_invalidate(s_canvas);
-    }
 
     update_start_stop_btn();
     if (s_btn_raw) lv_obj_add_state(s_btn_raw, LV_STATE_DISABLED);
@@ -435,8 +674,12 @@ static void on_back(lv_event_t *e)
 {
     (void)e;
     stop_listening();
+    uart_stop_collect();
     close_freq_popup();
     if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
+    if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
+
+    clear_signal_history();
 
     if (s_canvas_buf) {
         heap_caps_free(s_canvas_buf);
@@ -457,19 +700,80 @@ static void kb_poll_cb(lv_timer_t *t)
     }
 }
 
+static void ui_tick_cb(lv_timer_t *t)
+{
+    bool activity;
+    bool history_dirty;
+    size_t total;
+    lv_coord_t target_y;
+
+    (void)t;
+
+    activity = s_activity_pending;
+    s_activity_pending = false;
+    history_dirty = s_history_dirty;
+    s_history_dirty = false;
+
+    bsp_display_lock(0);
+    if (s_running)
+        waterfall_push_activity(activity);
+    if (history_dirty && s_follow_latest && s_sig_list) {
+        total = signal_count_snapshot();
+        target_y = (lv_coord_t)(total * SIGNAL_ROW_HEIGHT) - lv_obj_get_height(s_sig_list);
+        if (target_y < 0)
+            target_y = 0;
+        lv_obj_scroll_to_y(s_sig_list, target_y, LV_ANIM_OFF);
+    }
+    if (history_dirty || s_psram_exhausted)
+        refresh_signal_list_view();
+    bsp_display_unlock();
+}
+
+static void on_signal_list_scroll(lv_event_t *e)
+{
+    size_t total;
+    lv_coord_t max_scroll;
+    lv_coord_t scroll_y;
+
+    (void)e;
+
+    total = signal_count_snapshot();
+    scroll_y = lv_obj_get_scroll_y(s_sig_list);
+    if (scroll_y < 0)
+        scroll_y = 0;
+
+    max_scroll = (lv_coord_t)(total * SIGNAL_ROW_HEIGHT) - lv_obj_get_height(s_sig_list);
+    if (max_scroll < 0)
+        max_scroll = 0;
+
+    s_follow_latest = (max_scroll - scroll_y) <= SIGNAL_ROW_HEIGHT;
+    refresh_signal_list_view();
+}
+
 void show_subghz_listen_screen(void)
 {
+    memset(s_row_pool, 0, sizeof(s_row_pool));
+    s_signal_head  = NULL;
+    s_signal_tail  = NULL;
+    s_last_signal = NULL;
     s_signal_count = 0;
-    s_seen_count   = 0;
     s_running      = false;
+    s_follow_latest = true;
+    s_history_dirty = true;
+    s_activity_pending = false;
+    s_psram_exhausted = false;
     s_sig_list     = NULL;
+    s_sig_spacer   = NULL;
+    s_empty_lbl    = NULL;
     s_sig_count_lbl = NULL;
     s_freq_lbl     = NULL;
     s_btn_start_stop = NULL;
     s_btn_raw      = NULL;
     s_freq_popup   = NULL;
     s_kb_timer     = NULL;
+    s_ui_timer     = NULL;
     s_canvas       = NULL;
+    s_canvas_buf   = NULL;
 
     lv_obj_t *scr = ui_screen_clear();
 
@@ -582,15 +886,33 @@ void show_subghz_listen_screen(void)
     s_sig_list = lv_obj_create(scr);
     lv_obj_set_size(s_sig_list, LV_PCT(100), 240 - 122);
     lv_obj_set_y(s_sig_list, 122);
-    lv_obj_set_flex_flow(s_sig_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(s_sig_list, 2, 0);
-    lv_obj_set_style_pad_gap(s_sig_list, 1, 0);
+    lv_obj_set_style_pad_all(s_sig_list, 0, 0);
     lv_obj_set_style_bg_color(s_sig_list, ui_bg_color(), 0);
     lv_obj_set_style_bg_opa(s_sig_list, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_sig_list, 0, 0);
     lv_obj_set_scrollbar_mode(s_sig_list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_add_event_cb(s_sig_list, on_signal_list_scroll, LV_EVENT_SCROLL, NULL);
+
+    s_sig_spacer = lv_obj_create(s_sig_list);
+    lv_obj_set_pos(s_sig_spacer, 0, 0);
+    lv_obj_set_size(s_sig_spacer, 1, 1);
+    lv_obj_set_style_bg_opa(s_sig_spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_sig_spacer, 0, 0);
+    lv_obj_clear_flag(s_sig_spacer, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_empty_lbl = lv_label_create(s_sig_list);
+    lv_obj_set_pos(s_empty_lbl, 8, 6);
+    lv_obj_set_style_text_color(s_empty_lbl, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(s_empty_lbl, &lv_font_montserrat_12, 0);
+    lv_label_set_text(s_empty_lbl, "No signals captured");
+
+    for (int i = 0; i < SIGNAL_ROW_POOL_SIZE; i++)
+        configure_signal_row(&s_row_pool[i]);
+
+    refresh_signal_list_view();
 
     s_kb_timer = lv_timer_create(kb_poll_cb, 50, NULL);
+    s_ui_timer = lv_timer_create(ui_tick_cb, WATERFALL_TICK_MS, NULL);
 
     ESP_LOGI(TAG, "SubGHz Listen screen ready");
 }

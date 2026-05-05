@@ -20,6 +20,11 @@ static char end_marker[64] = {0};
 static uart_collect_callback_t collect_callback = NULL;
 static TickType_t collect_start_tick = 0;
 
+static bool is_noisy_subghz_line(const char *line)
+{
+    return line && strstr(line, "[SUBGHZ_RSSI]") != NULL;
+}
+
 static void process_line(char *line)
 {
     int len = strlen(line);
@@ -27,7 +32,10 @@ static void process_line(char *line)
         line[--len] = '\0';
     if (len == 0) return;
 
-    ESP_LOGI(TAG, "RX: %s", line);
+    if (is_noisy_subghz_line(line))
+        ESP_LOGD(TAG, "RX: %s", line);
+    else
+        ESP_LOGI(TAG, "RX: %s", line);
 
     if (collecting) {
         if (collected_count < MAX_COLLECTED_LINES) {
