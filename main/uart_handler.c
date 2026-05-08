@@ -10,6 +10,23 @@
 
 static const char *TAG = "uart";
 
+uart_port_mode_t uart_port_mode = UART_PORT_MODE_MBUS;
+
+void uart_handler_get_pins(uart_port_mode_t mode, int *tx, int *rx)
+{
+    switch (mode) {
+    case UART_PORT_MODE_PORTC:
+        if (tx) *tx = 17;
+        if (rx) *rx = 18;
+        break;
+    case UART_PORT_MODE_MBUS:
+    default:
+        if (tx) *tx = 43;
+        if (rx) *rx = 44;
+        break;
+    }
+}
+
 #define UART_BUF_SIZE         (16 * 1024)  /* 16 KB – large scan output */
 /* Górny limit żeby zbłądzony strumień UART nie wyczerpał PSRAM. */
 #define UART_COLLECT_HARD_CAP 4096
@@ -188,19 +205,24 @@ void uart_handler_init(void)
     ESP_ERROR_CHECK(uart_driver_install(UART_PORT, UART_BUF_SIZE, UART_BUF_SIZE, 0, NULL, 0));
     ESP_ERROR_CHECK(uart_param_config(UART_PORT, &cfg));
 
-    /* GPIO 43/44 default IO MUX function is U0TXD/U0RXD (UART0).
-     * IO MUX has priority over GPIO Matrix, so we must reset the pins
+    int tx_pin = 43;
+    int rx_pin = 44;
+    uart_handler_get_pins(uart_port_mode, &tx_pin, &rx_pin);
+
+    /* Default IO MUX functions on these pins may collide with UART0/other
+     * peripherals. IO MUX has priority over GPIO Matrix, so we reset the pins
      * to plain GPIO mode first, allowing uart_set_pin to route UART1
      * through the GPIO Matrix. */
-    gpio_reset_pin(UART_TX_PIN);
-    gpio_reset_pin(UART_RX_PIN);
+    gpio_reset_pin(tx_pin);
+    gpio_reset_pin(rx_pin);
 
-    ESP_ERROR_CHECK(uart_set_pin(UART_PORT, UART_TX_PIN, UART_RX_PIN,
+    ESP_ERROR_CHECK(uart_set_pin(UART_PORT, tx_pin, rx_pin,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
     xTaskCreate(uart_rx_task, "uart_rx", 8192, NULL, 12, NULL);
-    ESP_LOGI(TAG, "UART initialised TX=%d RX=%d @ %d (port %d)",
-             UART_TX_PIN, UART_RX_PIN, UART_BAUD_RATE, UART_PORT);
+    const char *port_name = (uart_port_mode == UART_PORT_MODE_PORTC) ? "Port C" : "MBus";
+    ESP_LOGI(TAG, "UART initialised %s TX=%d RX=%d @ %d (port %d)",
+             port_name, tx_pin, rx_pin, UART_BAUD_RATE, UART_PORT);
 }
 
 void uart_send_command(const char *cmd)

@@ -6,15 +6,23 @@
 #include <stddef.h>
 
 
-// M5Bus (default): TX=43, RX=44 | Grove: TX=2, RX=1
-// NOTE: Console must be routed to USB_SERIAL_JTAG (sdkconfig) to free these pins!
+// MBus:   TX=43, RX=44 (default)
+// Port C: TX=17, RX=18 (M5Go3 bottom base)
+// NOTE: Console must be routed to USB_SERIAL_JTAG (sdkconfig) to free MBus pins!
 
-#define UART_TX_PIN           43
-#define UART_RX_PIN           44
 #define UART_BAUD_RATE        115200
 #define UART_PORT             UART_NUM_1
 #define UART_MAX_LINE_LEN     512
 #define UART_COLLECT_TIMEOUT_MS 25000   /* max wait for end marker */
+
+typedef enum {
+    UART_PORT_MODE_MBUS  = 0,   /* TX=43, RX=44 (default) */
+    UART_PORT_MODE_PORTC = 1,   /* TX=17, RX=18 (M5Go3 Port C) */
+} uart_port_mode_t;
+
+extern uart_port_mode_t uart_port_mode;
+
+void uart_handler_get_pins(uart_port_mode_t mode, int *tx, int *rx);
 
 typedef void (*uart_line_callback_t)(const char *line);
 typedef void (*uart_collect_callback_t)(const char **lines, int line_count);

@@ -3,10 +3,12 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "esp_system.h"
 
 #define NVS_NAMESPACE       "settings"
 #define NVS_KEY_DARK_MODE   "dark_mode"
 #define NVS_KEY_BOOT_SOUND  "boot_sound"
+#define NVS_KEY_UART_PORT   "uart_port"
 
 static const char *TAG = "ui_helpers";
 
@@ -183,6 +185,19 @@ void save_boot_sound_to_nvs(boot_sound_mode_t mode)
     }
 }
 
+void save_uart_port_to_nvs(uart_port_mode_t mode)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_UART_PORT, (uint8_t)mode);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    } else {
+        ESP_LOGW(TAG, "NVS open for write failed: %s", esp_err_to_name(err));
+    }
+}
+
 void load_settings_from_nvs(void)
 {
     nvs_handle_t nvs;
@@ -199,6 +214,12 @@ void load_settings_from_nvs(void)
     err = nvs_get_u8(nvs, NVS_KEY_BOOT_SOUND, &bsound);
     if (err == ESP_OK && bsound <= BOOT_SOUND_STARWARS) {
         boot_sound_mode = (boot_sound_mode_t)bsound;
+    }
+
+    uint8_t uport = UART_PORT_MODE_MBUS;
+    err = nvs_get_u8(nvs, NVS_KEY_UART_PORT, &uport);
+    if (err == ESP_OK && uport <= UART_PORT_MODE_PORTC) {
+        uart_port_mode = (uart_port_mode_t)uport;
     }
 
     nvs_close(nvs);
@@ -233,6 +254,85 @@ static void on_boot_sound_changed(lv_event_t *e)
         boot_sound_mode = (boot_sound_mode_t)sel;
         save_boot_sound_to_nvs(boot_sound_mode);
     }
+}
+
+static void on_restart_now(lv_event_t *e)
+{
+    (void)e;
+    esp_restart();
+}
+
+static void on_restart_later(lv_event_t *e)
+{
+    lv_obj_t *popup = lv_event_get_user_data(e);
+    if (popup) lv_obj_del(popup);
+}
+
+static void show_uart_restart_popup(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+
+    lv_obj_t *popup = lv_obj_create(scr);
+    lv_obj_set_size(popup, LV_PCT(80), LV_SIZE_CONTENT);
+    lv_obj_center(popup);
+    style_popup_card(popup, 12, UI_ACCENT_ORANGE);
+    lv_obj_set_style_pad_all(popup, 16, 0);
+    lv_obj_set_flex_flow(popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(popup, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(popup, 12, 0);
+    lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *msg = lv_label_create(popup);
+    lv_label_set_text(msg, "Restart required to apply UART port change.");
+    lv_obj_set_style_text_color(msg, ui_text_color(), 0);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, LV_PCT(100));
+
+    lv_obj_t *btn_row = lv_obj_create(popup);
+    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *later_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(later_btn, 100, 36);
+    style_neutral_button(later_btn);
+    lv_obj_add_event_cb(later_btn, on_restart_later, LV_EVENT_CLICKED, popup);
+    lv_obj_t *llbl = lv_label_create(later_btn);
+    lv_label_set_text(llbl, "Later");
+    lv_obj_set_style_text_color(llbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(llbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(llbl);
+
+    lv_obj_t *now_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(now_btn, 120, 36);
+    lv_obj_set_style_bg_color(now_btn, UI_ACCENT_ORANGE, 0);
+    lv_obj_set_style_radius(now_btn, 8, 0);
+    lv_obj_add_event_cb(now_btn, on_restart_now, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *nlbl = lv_label_create(now_btn);
+    lv_label_set_text(nlbl, "Restart now");
+    lv_obj_set_style_text_color(nlbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(nlbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(nlbl);
+}
+
+static void on_uart_port_changed(lv_event_t *e)
+{
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint32_t sel = lv_dropdown_get_selected(dd);
+    if (sel > UART_PORT_MODE_PORTC) return;
+    if ((uart_port_mode_t)sel == uart_port_mode) return;
+
+    uart_port_mode = (uart_port_mode_t)sel;
+    save_uart_port_to_nvs(uart_port_mode);
+    show_uart_restart_popup();
 }
 
 static lv_obj_t *create_settings_row(lv_obj_t *parent)
@@ -309,4 +409,31 @@ void show_settings_screen(void)
     }
 
     lv_obj_add_event_cb(dd, on_boot_sound_changed, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* UART port row */
+    lv_obj_t *uart_row = create_settings_row(cont);
+
+    lv_obj_t *ulbl = lv_label_create(uart_row);
+    lv_label_set_text(ulbl, "UART port");
+    lv_obj_set_style_text_color(ulbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(ulbl, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *udd = lv_dropdown_create(uart_row);
+    lv_dropdown_set_options(udd, "MBus\nPort C");
+    lv_dropdown_set_selected(udd, (uint32_t)uart_port_mode);
+    lv_obj_set_width(udd, 120);
+    lv_obj_set_style_text_font(udd, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_bg_color(udd, ui_card_color(), 0);
+    lv_obj_set_style_text_color(udd, ui_text_color(), 0);
+    lv_obj_set_style_border_color(udd, ui_border_color(), 0);
+
+    lv_obj_t *ulist = lv_dropdown_get_list(udd);
+    if (ulist) {
+        lv_obj_set_style_bg_color(ulist, ui_card_color(), 0);
+        lv_obj_set_style_text_color(ulist, ui_text_color(), 0);
+        lv_obj_set_style_border_color(ulist, ui_border_color(), 0);
+        lv_obj_set_style_text_font(ulist, &lv_font_montserrat_12, 0);
+    }
+
+    lv_obj_add_event_cb(udd, on_uart_port_changed, LV_EVENT_VALUE_CHANGED, NULL);
 }

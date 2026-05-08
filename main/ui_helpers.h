@@ -3,6 +3,7 @@
 
 #include "lvgl.h"
 #include <stdbool.h>
+#include "uart_handler.h"
 
 /* ========== Dark palette ========== */
 #define COLOR_DARK_BG            lv_color_hex(0x050A14)
@@ -92,6 +93,7 @@ lv_obj_t *ui_create_tile(lv_obj_t *parent, const char *icon,
 /* ========== NVS persistence ========== */
 void save_dark_mode_to_nvs(bool enabled);
 void save_boot_sound_to_nvs(boot_sound_mode_t mode);
+void save_uart_port_to_nvs(uart_port_mode_t mode);
 void load_settings_from_nvs(void);
 
 /* ========== Settings screen ========== */
