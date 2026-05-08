@@ -4,6 +4,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "led_indicator.h"
 #include "esp_log.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_heap_caps.h"
@@ -446,8 +447,10 @@ static void subghz_line_cb(const char *line)
 
     if (parsed.kind == SUBGHZ_SIGNAL_KIND_RX ||
         parsed.kind == SUBGHZ_SIGNAL_KIND_RX_DUP ||
-        parsed.kind == SUBGHZ_SIGNAL_KIND_RAW)
+        parsed.kind == SUBGHZ_SIGNAL_KIND_RAW) {
         s_activity_pending = true;
+        led_indicator_signal_received();
+    }
 
     if (!s_raw_mode && parsed.kind == SUBGHZ_SIGNAL_KIND_RAW)
         return;

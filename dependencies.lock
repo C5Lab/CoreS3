@@ -16,7 +16,7 @@ dependencies:
       type: local
     version: 2.1.5
   espressif/esp_codec_dev:
-    component_hash: 54870f7a66dd93367b4153dedb22299efadf8b7b2ead322cdebc7c92a542fa35
+    component_hash: 9293329ccb361f67c6e847ab8f693b2d9158b2e438eff583c28558c29cdf3dca
     dependencies:
     - name: idf
       require: private
@@ -24,7 +24,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 1.5.7
+    version: 1.5.9
   espressif/esp_jpeg:
     component_hash: defb83669293cbf86d0fa86b475ba5517aceed04ed70db435388c151ab37b5d7
     dependencies:
@@ -87,6 +87,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 2.7.2
+  espressif/led_strip:
+    component_hash: 28621486f77229aaf81c71f5e15d6fbf36c2949cf11094e07090593e659e7639
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 3.0.3
   espressif/m5stack_core_s3:
     component_hash: 2b578980fc81304857504b8a92e1693e8529966f097fd626b251d0b052bf6a48
     dependencies:
@@ -124,16 +134,17 @@ dependencies:
       type: idf
     version: 6.0.0
   lvgl/lvgl:
-    component_hash: 17e68bfd21f0edf4c3ee838e2273da840bf3930e5dbc3bfa6c1190c3aed41f9f
+    component_hash: 184e532558c1c45fefed631f3e235423d22582aafb4630f3e8885c35281a49ae
     dependencies: []
     source:
       registry_url: https://components.espressif.com
       type: service
-    version: 9.4.0
+    version: 9.5.0
 direct_dependencies:
 - espressif/esp_jpeg
+- espressif/led_strip
 - espressif/m5stack_core_s3
 - idf
-manifest_hash: 7e4bec9be694666e11be463d9990db7e719fba0f836e9e9a2fbd91fd32bba188
+manifest_hash: 923a56938959047c67c95c5fefae1514d15005258de5af75c96072111b2f1308
 target: esp32s3
 version: 3.0.0

@@ -3,6 +3,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "led_indicator.h"
 #include "esp_log.h"
 #include <stdio.h>
 
@@ -20,6 +21,7 @@ static void on_open_port(lv_event_t *e)
 
     uart_send_command("subghz_freq 315.00");
     uart_send_command("subghz_tx tesla");
+    led_indicator_tx_pulse(1200);
 
     if (s_status_lbl) {
         lv_label_set_text(s_status_lbl, "Signal sent!");

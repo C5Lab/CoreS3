@@ -7,6 +7,7 @@ idf_component_register(
         "psram_dynarr.c"
         "cardkb.c"
         "subghz_parser.c"
+        "led_indicator.c"
         "screens/home_screen.c"
         "screens/wifi_scan_screen.c"
         "screens/attack_select_screen.c"
@@ -43,6 +44,7 @@ idf_component_register(
         esp_codec_dev
         m5stack_core_s3
         lvgl__lvgl
+        espressif__led_strip
 )
 
 # Force inclusion of our LVGL custom-malloc backend so the linker pulls

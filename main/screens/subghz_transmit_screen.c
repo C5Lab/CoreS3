@@ -4,6 +4,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "led_indicator.h"
 #include "psram_dynarr.h"
 #include "esp_log.h"
 #include "bsp/m5stack_core_s3.h"
@@ -164,6 +165,7 @@ static void on_tx_confirm(lv_event_t *e)
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "subghz_tx %d", idx);
     uart_send_command(cmd);
+    led_indicator_tx_pulse(1500);
 
     if (s_status_lbl) {
         lv_label_set_text_fmt(s_status_lbl, "Transmitted signal #%d", idx);

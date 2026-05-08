@@ -3,6 +3,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "led_indicator.h"
 #include "esp_log.h"
 #include <string.h>
 #include <stdio.h>
@@ -135,6 +136,7 @@ static void stop_jamming(void)
     if (!s_jamming) return;
     s_jamming = false;
     uart_send_command("subghz_stop");
+    led_indicator_tx_stop();
 
     if (s_status_lbl) {
         lv_label_set_text(s_status_lbl, "Idle");
@@ -162,6 +164,7 @@ static void on_big_btn(lv_event_t *e)
     snprintf(cmd, sizeof(cmd), "subghz_freq %.2f", s_freq_mhz);
     uart_send_command(cmd);
     uart_send_command("subghz_jam");
+    led_indicator_tx_start();
 
     if (s_status_lbl) {
         lv_label_set_text_fmt(s_status_lbl, "Jamming %d.%02d MHz...",

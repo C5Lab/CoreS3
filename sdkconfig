@@ -3918,6 +3918,8 @@ CONFIG_LV_USE_DRAW_SW=y
 # default:
 CONFIG_LV_DRAW_SW_SUPPORT_RGB565=y
 # default:
+CONFIG_LV_DRAW_SW_SUPPORT_RGB565_SWAPPED=y
+# default:
 CONFIG_LV_DRAW_SW_SUPPORT_RGB565A8=y
 # default:
 CONFIG_LV_DRAW_SW_SUPPORT_RGB888=y
@@ -3957,6 +3959,8 @@ CONFIG_LV_DRAW_SW_ASM_NONE=y
 # CONFIG_LV_DRAW_SW_ASM_NEON is not set
 # default:
 # CONFIG_LV_DRAW_SW_ASM_HELIUM is not set
+# default:
+# CONFIG_LV_DRAW_SW_ASM_RISCV_V is not set
 # default:
 # CONFIG_LV_DRAW_SW_ASM_CUSTOM is not set
 # default:
@@ -4041,6 +4045,8 @@ CONFIG_LV_COLOR_MIX_ROUND_OFS=128
 # CONFIG_LV_USE_OBJ_NAME is not set
 # default:
 # CONFIG_LV_USE_OBJ_PROPERTY is not set
+# default:
+# CONFIG_LV_USE_EXT_DATA is not set
 # end of Others
 # end of Feature Configuration
 
@@ -4375,6 +4381,8 @@ CONFIG_LV_FS_DEFAULT_DRIVER_LETTER=0
 # default:
 # CONFIG_LV_USE_LIBJPEG_TURBO is not set
 # default:
+# CONFIG_LV_USE_LIBWEBP is not set
+# default:
 # CONFIG_LV_USE_GIF is not set
 # default:
 # CONFIG_LV_BIN_DECODER_RAM_LOAD is not set
@@ -4392,6 +4400,8 @@ CONFIG_LV_FS_DEFAULT_DRIVER_LETTER=0
 # CONFIG_LV_USE_RLOTTIE is not set
 # default:
 # CONFIG_LV_USE_THORVG is not set
+# default:
+# CONFIG_LV_USE_NANOVG is not set
 # default:
 # CONFIG_LV_USE_LZ4 is not set
 # default:
@@ -4428,13 +4438,11 @@ CONFIG_LV_USE_OBSERVER=y
 # default:
 # CONFIG_LV_USE_TRANSLATION is not set
 # default:
-# CONFIG_LV_USE_XML is not set
-# default:
 # CONFIG_LV_USE_COLOR_FILTER is not set
 # default:
 CONFIG_LVGL_VERSION_MAJOR=9
 # default:
-CONFIG_LVGL_VERSION_MINOR=4
+CONFIG_LVGL_VERSION_MINOR=5
 # default:
 CONFIG_LVGL_VERSION_PATCH=0
 # end of Others
@@ -4483,8 +4491,6 @@ CONFIG_LVGL_VERSION_PATCH=0
 # default:
 # CONFIG_LV_USE_UEFI is not set
 # default:
-# CONFIG_LV_USE_OPENGLES is not set
-# default:
 # CONFIG_LV_USE_QNX is not set
 # end of Devices
 
@@ -4508,8 +4514,6 @@ CONFIG_LV_BUILD_DEMOS=y
 # CONFIG_LV_USE_DEMO_BENCHMARK is not set
 # default:
 # CONFIG_LV_USE_DEMO_RENDER is not set
-# default:
-# CONFIG_LV_USE_DEMO_SCROLL is not set
 # default:
 # CONFIG_LV_USE_DEMO_STRESS is not set
 # default:

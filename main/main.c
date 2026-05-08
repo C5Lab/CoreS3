@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "led_indicator.h"
 #include "ui_helpers.h"
 #include "home_screen.h"
 #include <math.h>
@@ -275,6 +276,9 @@ void app_main(void)
 
     /* UART to ESP32C5 */
     uart_handler_init();
+
+    /* M5GO Bottom3 LED strip (10x WS2812 on GPIO5) */
+    led_indicator_init();
 
     /* CardKB on Grove Port A (I2C) */
     ESP_ERROR_CHECK(cardkb_init());
