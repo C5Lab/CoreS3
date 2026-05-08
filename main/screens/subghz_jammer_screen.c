@@ -16,6 +16,7 @@ static lv_obj_t   *s_freq_lbl;
 static lv_obj_t   *s_big_btn;
 static lv_obj_t   *s_big_btn_lbl;
 static lv_obj_t   *s_freq_popup;
+static lv_obj_t   *s_freq_backdrop;
 static lv_timer_t *s_kb_timer;
 
 static void on_back(lv_event_t *e);
@@ -26,6 +27,10 @@ static void close_freq_popup(void)
     if (s_freq_popup) {
         lv_obj_delete(s_freq_popup);
         s_freq_popup = NULL;
+    }
+    if (s_freq_backdrop) {
+        lv_obj_delete(s_freq_backdrop);
+        s_freq_backdrop = NULL;
     }
 }
 
@@ -52,15 +57,31 @@ static void on_freq_popup_close(lv_event_t *e)
     close_freq_popup();
 }
 
+static void on_backdrop_tap(lv_event_t *e)
+{
+    (void)e;
+    close_freq_popup();
+}
+
 static void on_freq_tap(lv_event_t *e)
 {
     (void)e;
     if (s_jamming) return;
     if (s_freq_popup) { close_freq_popup(); return; }
 
+    /* Full-screen dim backdrop so the popup reads as a modal overlay. */
+    s_freq_backdrop = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(s_freq_backdrop);
+    lv_obj_set_size(s_freq_backdrop, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(s_freq_backdrop, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_freq_backdrop, LV_OPA_60, 0);
+    lv_obj_add_flag(s_freq_backdrop, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_freq_backdrop, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(s_freq_backdrop, on_backdrop_tap, LV_EVENT_CLICKED, NULL);
+
     s_freq_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_freq_popup, 200, 120);
-    lv_obj_center(s_freq_popup);
+    lv_obj_set_size(s_freq_popup, 200, 130);
+    lv_obj_align(s_freq_popup, LV_ALIGN_CENTER, 0, 0);
     style_popup_card(s_freq_popup, 10, UI_ACCENT_RED);
     lv_obj_set_flex_flow(s_freq_popup, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(s_freq_popup, LV_FLEX_ALIGN_SPACE_EVENLY,
@@ -182,14 +203,14 @@ void show_subghz_jammer_screen(void)
     s_big_btn      = NULL;
     s_big_btn_lbl  = NULL;
     s_freq_popup   = NULL;
+    s_freq_backdrop = NULL;
     s_kb_timer     = NULL;
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Jammer", on_back, NULL);
 
-    /* Frequency label (tappable) */
+    /* Frequency label (tappable) — sits just below the 36 px top bar */
     s_freq_lbl = lv_label_create(scr);
-    lv_obj_set_y(s_freq_lbl, 50);
     lv_obj_set_style_text_font(s_freq_lbl, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_freq_lbl, UI_ACCENT_RED, 0);
     {
@@ -197,16 +218,14 @@ void show_subghz_jammer_screen(void)
         int frac  = ((int)(s_freq_mhz * 100.0f + 0.5f)) % 100;
         lv_label_set_text_fmt(s_freq_lbl, "%d.%02d MHz", whole, frac);
     }
-    lv_obj_center(s_freq_lbl);
-    lv_obj_set_y(s_freq_lbl, 50);
+    lv_obj_align(s_freq_lbl, LV_ALIGN_TOP_MID, 0, 46);
     lv_obj_add_flag(s_freq_lbl, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_freq_lbl, on_freq_tap, LV_EVENT_CLICKED, NULL);
 
-    /* Big start/stop button */
+    /* Big start/stop button — anchored to the screen center */
     s_big_btn = lv_btn_create(scr);
     lv_obj_set_size(s_big_btn, 180, 60);
-    lv_obj_center(s_big_btn);
-    lv_obj_set_y(s_big_btn, 110);
+    lv_obj_align(s_big_btn, LV_ALIGN_CENTER, 0, 10);
     lv_obj_set_style_bg_color(s_big_btn, UI_ACCENT_RED, 0);
     lv_obj_set_style_radius(s_big_btn, 12, 0);
     lv_obj_add_event_cb(s_big_btn, on_big_btn, LV_EVENT_CLICKED, NULL);
@@ -216,14 +235,12 @@ void show_subghz_jammer_screen(void)
     lv_obj_set_style_text_font(s_big_btn_lbl, &lv_font_montserrat_16, 0);
     lv_obj_center(s_big_btn_lbl);
 
-    /* Status */
+    /* Status — pinned to the bottom edge */
     s_status_lbl = lv_label_create(scr);
-    lv_obj_set_y(s_status_lbl, 195);
     lv_obj_set_style_text_font(s_status_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_status_lbl, ui_muted_color(), 0);
     lv_label_set_text(s_status_lbl, "Idle");
-    lv_obj_center(s_status_lbl);
-    lv_obj_set_y(s_status_lbl, 195);
+    lv_obj_align(s_status_lbl, LV_ALIGN_BOTTOM_MID, 0, -10);
 
     s_kb_timer = lv_timer_create(kb_poll_cb, 50, NULL);
 
