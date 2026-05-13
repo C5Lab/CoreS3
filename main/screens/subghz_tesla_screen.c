@@ -57,35 +57,31 @@ void show_subghz_tesla_screen(void)
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Tesla", on_back, NULL);
 
-    /* Icon */
+    /* Icon — just below 36 px top bar (same idea as Jammer screen) */
     lv_obj_t *icon = lv_label_create(scr);
     lv_label_set_text(icon, LV_SYMBOL_POWER);
     lv_obj_set_style_text_font(icon, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(icon, UI_ACCENT_PURPLE, 0);
-    lv_obj_center(icon);
-    lv_obj_set_y(icon, 50);
+    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 40);
 
     /* Title */
     lv_obj_t *title = lv_label_create(scr);
     lv_label_set_text(title, "Charge Port Opener");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(title, ui_text_color(), 0);
-    lv_obj_center(title);
-    lv_obj_set_y(title, 75);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 64);
 
     /* Freq info */
     lv_obj_t *freq = lv_label_create(scr);
     lv_label_set_text(freq, "315.00 MHz OOK");
     lv_obj_set_style_text_font(freq, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(freq, ui_muted_color(), 0);
-    lv_obj_center(freq);
-    lv_obj_set_y(freq, 95);
+    lv_obj_align(freq, LV_ALIGN_TOP_MID, 0, 84);
 
     /* Big button */
     lv_obj_t *btn = lv_btn_create(scr);
     lv_obj_set_size(btn, 200, 55);
-    lv_obj_center(btn);
-    lv_obj_set_y(btn, 135);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 118);
     lv_obj_set_style_bg_color(btn, UI_ACCENT_PURPLE, 0);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x7B1FA2), LV_STATE_PRESSED);
     lv_obj_set_style_radius(btn, 12, 0);
@@ -101,8 +97,7 @@ void show_subghz_tesla_screen(void)
     lv_obj_set_style_text_font(s_status_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_status_lbl, ui_muted_color(), 0);
     lv_label_set_text(s_status_lbl, "Ready");
-    lv_obj_center(s_status_lbl);
-    lv_obj_set_y(s_status_lbl, 195);
+    lv_obj_align(s_status_lbl, LV_ALIGN_TOP_MID, 0, 182);
 
     s_kb_timer = lv_timer_create(kb_poll_cb, 50, NULL);
 

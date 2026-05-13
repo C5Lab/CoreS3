@@ -4,6 +4,7 @@
 #include "subghz_manage_screen.h"
 #include "subghz_jammer_screen.h"
 #include "subghz_tesla_screen.h"
+#include "subghz_hunter_screen.h"
 #include "home_screen.h"
 #include "ui_helpers.h"
 #include "esp_log.h"
@@ -51,6 +52,13 @@ static void on_tesla(lv_event_t *e)
     show_subghz_tesla_screen();
 }
 
+static void on_hunter(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Hunter");
+    show_subghz_hunter_screen();
+}
+
 void show_subghz_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
@@ -72,6 +80,7 @@ void show_subghz_screen(void)
 
     ui_create_tile(grid, LV_SYMBOL_EYE_OPEN, "Listen",   UI_ACCENT_CYAN,   on_listen,   NULL);
     ui_create_tile(grid, LV_SYMBOL_PLAY,     "Transmit", UI_ACCENT_GREEN,  on_transmit, NULL);
+    ui_create_tile(grid, LV_SYMBOL_GPS,      "Hunter",   UI_ACCENT_PINK,   on_hunter,   NULL);
     ui_create_tile(grid, LV_SYMBOL_LIST,     "Manage",   UI_ACCENT_ORANGE, on_manage,   NULL);
     ui_create_tile(grid, LV_SYMBOL_WARNING,  "Jammer",   UI_ACCENT_RED,    on_jammer,   NULL);
     ui_create_tile(grid, LV_SYMBOL_POWER,    "Tesla",    UI_ACCENT_PURPLE, on_tesla,    NULL);

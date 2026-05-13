@@ -30,6 +30,7 @@ idf_component_register(
         "screens/subghz_manage_screen.c"
         "screens/subghz_jammer_screen.c"
         "screens/subghz_tesla_screen.c"
+        "screens/subghz_hunter_screen.c"
     INCLUDE_DIRS
         "."
         "screens"
