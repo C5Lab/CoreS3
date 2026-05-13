@@ -3,7 +3,11 @@
 
 #include "lvgl.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include "uart_handler.h"
+
+/** Default LCD brightness; keep in sync with first `bsp_display_brightness_set` in app_main. */
+#define UI_DEFAULT_BRIGHTNESS  80
 
 /* ========== Dark palette ========== */
 #define COLOR_DARK_BG            lv_color_hex(0x050A14)
@@ -51,6 +55,9 @@ typedef enum {
 
 extern boot_sound_mode_t boot_sound_mode;
 
+/** Seconds of LVGL inactivity before backlight off; 0 = never. */
+extern uint16_t screen_off_timeout_s;
+
 /* ========== Color accessor functions ========== */
 static inline lv_color_t ui_bg_color(void) {
     return dark_mode_enabled ? COLOR_DARK_BG : COLOR_LIGHT_BG;
@@ -94,7 +101,11 @@ lv_obj_t *ui_create_tile(lv_obj_t *parent, const char *icon,
 void save_dark_mode_to_nvs(bool enabled);
 void save_boot_sound_to_nvs(boot_sound_mode_t mode);
 void save_uart_port_to_nvs(uart_port_mode_t mode);
+void save_screen_timeout_to_nvs(uint16_t seconds);
 void load_settings_from_nvs(void);
+
+/** Start periodic check for screen idle (call after display + brightness init). */
+void ui_screen_timeout_init(void);
 
 /* ========== Settings screen ========== */
 void show_settings_screen(void);

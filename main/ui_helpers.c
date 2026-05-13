@@ -7,16 +7,149 @@
 #include "bsp/m5stack_core_s3.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdint.h>
 
 #define NVS_NAMESPACE       "settings"
 #define NVS_KEY_DARK_MODE   "dark_mode"
 #define NVS_KEY_BOOT_SOUND  "boot_sound"
 #define NVS_KEY_UART_PORT   "uart_port"
+#define NVS_KEY_SCREEN_OFF  "screen_off_s"
+
+#define SCREEN_IDLE_POLL_MS           500
+
+/** Must match `ui_create_top_bar` height in this file. */
+#define UI_TOP_BAR_H                  36
 
 static const char *TAG = "ui_helpers";
 
 bool dark_mode_enabled = true;
 boot_sound_mode_t boot_sound_mode = BOOT_SOUND_NOKIA;
+uint16_t screen_off_timeout_s = 0;
+
+static const uint16_t k_screen_timeout_sec[] = { 0, 30, 60, 120, 300, 600 };
+#define K_SCREEN_TIMEOUT_OPTS  (sizeof(k_screen_timeout_sec) / sizeof(k_screen_timeout_sec[0]))
+
+static lv_timer_t *s_screen_idle_timer;
+static lv_obj_t *s_wake_blocker;
+static bool s_bl_asleep;
+static int s_saved_brightness = UI_DEFAULT_BRIGHTNESS;
+
+/** Settings top bar; used to keep Back above dropdown lists / popups. Cleared on LV_EVENT_DELETE. */
+static lv_obj_t *s_settings_top_bar;
+
+static void on_settings_bar_deleted(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+        s_settings_top_bar = NULL;
+    }
+}
+
+static void on_settings_dropdown_raise_bar(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_READY) {
+        return;
+    }
+    lv_obj_t *bar = lv_event_get_user_data(e);
+    if (bar) {
+        lv_obj_move_to_index(bar, -1);
+    }
+}
+
+static void screen_wake_blocker_remove(void)
+{
+    if (s_wake_blocker) {
+        lv_obj_del(s_wake_blocker);
+        s_wake_blocker = NULL;
+    }
+}
+
+static void on_wake_blocker_pressed(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) {
+        return;
+    }
+
+    lv_event_stop_processing(e);
+
+    lv_obj_t *blocker = lv_event_get_target(e);
+    s_wake_blocker = NULL;
+
+    bsp_display_brightness_set(s_saved_brightness);
+    s_bl_asleep = false;
+    lv_obj_del(blocker);
+}
+
+static void screen_wake_blocker_install(void)
+{
+    screen_wake_blocker_remove();
+
+    lv_display_t *disp = lv_display_get_default();
+    if (!disp) {
+        return;
+    }
+
+    lv_obj_t *layer = lv_layer_top();
+    if (!layer) {
+        return;
+    }
+
+    s_wake_blocker = lv_obj_create(layer);
+    lv_obj_set_size(s_wake_blocker,
+                    lv_display_get_horizontal_resolution(disp),
+                    lv_display_get_vertical_resolution(disp));
+    lv_obj_align(s_wake_blocker, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_opa(s_wake_blocker, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_wake_blocker, 0, 0);
+    lv_obj_clear_flag(s_wake_blocker, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_wake_blocker, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_wake_blocker, on_wake_blocker_pressed, LV_EVENT_PRESSED, NULL);
+}
+
+static uint32_t screen_timeout_sec_to_dd_index(uint16_t sec)
+{
+    for (uint32_t i = 0; i < K_SCREEN_TIMEOUT_OPTS; i++) {
+        if (k_screen_timeout_sec[i] == sec) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+static uint16_t screen_timeout_dd_index_to_sec(uint32_t idx)
+{
+    if (idx >= K_SCREEN_TIMEOUT_OPTS) {
+        return 0;
+    }
+    return k_screen_timeout_sec[idx];
+}
+
+static void screen_idle_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+
+    if (screen_off_timeout_s == 0) {
+        if (s_bl_asleep) {
+            screen_wake_blocker_remove();
+            bsp_display_brightness_set(s_saved_brightness);
+            s_bl_asleep = false;
+        }
+        return;
+    }
+
+    uint32_t inactive_ms = lv_display_get_inactive_time(NULL);
+    uint32_t timeout_ms = (uint32_t)screen_off_timeout_s * 1000u;
+
+    if (s_bl_asleep) {
+        return;
+    }
+
+    if (inactive_ms >= timeout_ms) {
+        s_saved_brightness = UI_DEFAULT_BRIGHTNESS;
+        bsp_display_brightness_set(0);
+        s_bl_asleep = true;
+        screen_wake_blocker_install();
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /*  Style helpers                                                      */
@@ -201,6 +334,19 @@ void save_uart_port_to_nvs(uart_port_mode_t mode)
     }
 }
 
+void save_screen_timeout_to_nvs(uint16_t seconds)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u16(nvs, NVS_KEY_SCREEN_OFF, seconds);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    } else {
+        ESP_LOGW(TAG, "NVS open for write failed: %s", esp_err_to_name(err));
+    }
+}
+
 void load_settings_from_nvs(void)
 {
     nvs_handle_t nvs;
@@ -223,6 +369,21 @@ void load_settings_from_nvs(void)
     err = nvs_get_u8(nvs, NVS_KEY_UART_PORT, &uport);
     if (err == ESP_OK && uport <= UART_PORT_MODE_PORTC) {
         uart_port_mode = (uart_port_mode_t)uport;
+    }
+
+    uint16_t off_s = 0;
+    err = nvs_get_u16(nvs, NVS_KEY_SCREEN_OFF, &off_s);
+    if (err == ESP_OK) {
+        bool known = false;
+        for (uint32_t i = 0; i < K_SCREEN_TIMEOUT_OPTS; i++) {
+            if (k_screen_timeout_sec[i] == off_s) {
+                known = true;
+                break;
+            }
+        }
+        if (known) {
+            screen_off_timeout_s = off_s;
+        }
     }
 
     nvs_close(nvs);
@@ -277,7 +438,7 @@ static void show_uart_restart_popup(void)
 
     lv_obj_t *popup = lv_obj_create(scr);
     lv_obj_set_size(popup, LV_PCT(80), LV_SIZE_CONTENT);
-    lv_obj_center(popup);
+    lv_obj_align(popup, LV_ALIGN_BOTTOM_MID, 0, -8);
     style_popup_card(popup, 12, UI_ACCENT_ORANGE);
     lv_obj_set_style_pad_all(popup, 16, 0);
     lv_obj_set_flex_flow(popup, LV_FLEX_FLOW_COLUMN);
@@ -324,6 +485,10 @@ static void show_uart_restart_popup(void)
     lv_obj_set_style_text_color(nlbl, lv_color_white(), 0);
     lv_obj_set_style_text_font(nlbl, &lv_font_montserrat_14, 0);
     lv_obj_center(nlbl);
+
+    if (s_settings_top_bar) {
+        lv_obj_move_to_index(s_settings_top_bar, -1);
+    }
 }
 
 static void on_uart_port_changed(lv_event_t *e)
@@ -336,6 +501,25 @@ static void on_uart_port_changed(lv_event_t *e)
     uart_port_mode = (uart_port_mode_t)sel;
     save_uart_port_to_nvs(uart_port_mode);
     show_uart_restart_popup();
+}
+
+static void on_screen_timeout_changed(lv_event_t *e)
+{
+    lv_obj_t *dd = lv_event_get_target(e);
+    uint32_t sel = lv_dropdown_get_selected(dd);
+    uint16_t sec = screen_timeout_dd_index_to_sec(sel);
+    if (sec == screen_off_timeout_s) {
+        return;
+    }
+
+    screen_off_timeout_s = sec;
+    save_screen_timeout_to_nvs(sec);
+
+    if (sec == 0 && s_bl_asleep) {
+        screen_wake_blocker_remove();
+        bsp_display_brightness_set(s_saved_brightness);
+        s_bl_asleep = false;
+    }
 }
 
 static lv_obj_t *create_settings_row(lv_obj_t *parent)
@@ -356,11 +540,23 @@ void show_settings_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
 
-    ui_create_top_bar(scr, "Settings", on_settings_back, NULL);
+    lv_obj_t *top_bar = ui_create_top_bar(scr, "Settings", on_settings_back, NULL);
+    s_settings_top_bar = top_bar;
+    lv_obj_add_event_cb(top_bar, on_settings_bar_deleted, LV_EVENT_DELETE, NULL);
 
     lv_obj_t *cont = lv_obj_create(scr);
     lv_obj_set_size(cont, LV_PCT(90), LV_SIZE_CONTENT);
-    lv_obj_align(cont, LV_ALIGN_CENTER, 0, 10);
+    lv_obj_align_to(cont, top_bar, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
+    {
+        lv_display_t *disp = lv_display_get_default();
+        int32_t vres = disp ? (int32_t)lv_display_get_vertical_resolution(disp) : 240;
+        int32_t max_h = vres - UI_TOP_BAR_H - 6 - 8;
+        if (max_h < 80) {
+            max_h = 80;
+        }
+        lv_obj_set_style_max_height(cont, max_h, 0);
+    }
+    lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(cont, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(cont, 12, 0);
@@ -370,7 +566,6 @@ void show_settings_screen(void)
     lv_obj_set_style_pad_all(cont, 16, 0);
     lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(cont, 12, 0);
-    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Dark mode row */
     lv_obj_t *dark_row = create_settings_row(cont);
@@ -412,6 +607,7 @@ void show_settings_screen(void)
     }
 
     lv_obj_add_event_cb(dd, on_boot_sound_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(dd, on_settings_dropdown_raise_bar, LV_EVENT_READY, top_bar);
 
     /* UART port row */
     lv_obj_t *uart_row = create_settings_row(cont);
@@ -439,6 +635,45 @@ void show_settings_screen(void)
     }
 
     lv_obj_add_event_cb(udd, on_uart_port_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(udd, on_settings_dropdown_raise_bar, LV_EVENT_READY, top_bar);
+
+    /* Screen timeout row */
+    lv_obj_t *to_row = create_settings_row(cont);
+
+    lv_obj_t *tolbl = lv_label_create(to_row);
+    lv_label_set_text(tolbl, "Screen timeout");
+    lv_obj_set_style_text_color(tolbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(tolbl, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *todd = lv_dropdown_create(to_row);
+    lv_dropdown_set_options(todd, "Never\n30 s\n1 min\n2 min\n5 min\n10 min");
+    lv_dropdown_set_selected(todd, screen_timeout_sec_to_dd_index(screen_off_timeout_s));
+    lv_obj_set_width(todd, 120);
+    lv_obj_set_style_text_font(todd, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_bg_color(todd, ui_card_color(), 0);
+    lv_obj_set_style_text_color(todd, ui_text_color(), 0);
+    lv_obj_set_style_border_color(todd, ui_border_color(), 0);
+
+    lv_obj_t *tolist = lv_dropdown_get_list(todd);
+    if (tolist) {
+        lv_obj_set_style_bg_color(tolist, ui_card_color(), 0);
+        lv_obj_set_style_text_color(tolist, ui_text_color(), 0);
+        lv_obj_set_style_border_color(tolist, ui_border_color(), 0);
+        lv_obj_set_style_text_font(tolist, &lv_font_montserrat_12, 0);
+    }
+
+    lv_obj_add_event_cb(todd, on_screen_timeout_changed, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_add_event_cb(todd, on_settings_dropdown_raise_bar, LV_EVENT_READY, top_bar);
+
+    lv_obj_move_to_index(top_bar, -1);
+}
+
+void ui_screen_timeout_init(void)
+{
+    if (s_screen_idle_timer) {
+        return;
+    }
+    s_screen_idle_timer = lv_timer_create(screen_idle_timer_cb, SCREEN_IDLE_POLL_MS, NULL);
 }
 
 bool ui_display_lock_wait(void)

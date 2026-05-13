@@ -273,7 +273,8 @@ void app_main(void)
 
     /* BSP: display + touch + LVGL */
     bsp_display_start();
-    bsp_display_brightness_set(80);
+    bsp_display_brightness_set(UI_DEFAULT_BRIGHTNESS);
+    ui_screen_timeout_init();
 
     parse_worker_init();
 
