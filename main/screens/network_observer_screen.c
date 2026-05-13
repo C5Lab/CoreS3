@@ -3,6 +3,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "psram_dynarr.h"
+#include "parse_worker.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -85,8 +86,15 @@ static lv_obj_t *status_label = NULL;
 static lv_obj_t *popup_obj    = NULL;
 static lv_obj_t *obs_list     = NULL;
 
+#define OBS_MAIN_NETS_PER_TICK 2
+#define OBS_MAIN_BUILD_MS      25
+
+static lv_timer_t *obs_main_build_timer = NULL;
+static int         obs_main_build_idx   = 0;
+
 /* ---- forward declarations ---- */
 static void sort_networks(void);
+static void stop_obs_main_build_timer(void);
 static void show_main_view(void);
 static void rebuild_list_content(void);
 static void show_probe_picker(void);
@@ -202,13 +210,16 @@ static void poll_done_cb(void *arg)
     sort_networks();
     ESP_LOGI(TAG, "Poll done: %d networks", obs_net_count);
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) {
+        ESP_LOGW(TAG, "poll_done_cb: display lock failed");
+        return;
+    }
     if (obs_list) {
         rebuild_list_content();
     } else {
         show_main_view();
     }
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void poll_line_cb(const char *line)
@@ -291,6 +302,11 @@ static void start_poll_timer(int64_t interval)
 
 static void stop_all(void)
 {
+    if (bsp_display_lock(portMAX_DELAY)) {
+        stop_obs_main_build_timer();
+        ui_display_unlock_safe();
+    }
+
     obs_running = false;
     poll_collecting = false;
     probe_collecting = false;
@@ -318,9 +334,9 @@ static void on_back_home(lv_event_t *e)
 {
     (void)e;
     stop_all();
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_home_screen();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void resume_sniffer(void)
@@ -348,9 +364,9 @@ static void close_deauth_popup(void)
     if (popup_obj) { lv_obj_del(popup_obj); popup_obj = NULL; }
     deauth_btn_lbl = NULL;
     resume_sniffer();
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_main_view();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void deauth_btn_cb(lv_event_t *e)
@@ -490,9 +506,9 @@ static void close_net_popup(lv_event_t *e)
     if (popup_obj) { lv_obj_del(popup_obj); popup_obj = NULL; }
     net_popup_clients = NULL;
     resume_sniffer();
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_main_view();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void net_popup_cli_click(lv_event_t *e)
@@ -501,9 +517,9 @@ static void net_popup_cli_click(lv_event_t *e)
     if (popup_obj) { lv_obj_del(popup_obj); popup_obj = NULL; }
     net_popup_clients = NULL;
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_deauth_popup(focused_net_idx, cli_idx);
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void show_network_popup(int net_idx)
@@ -642,9 +658,9 @@ static void sort_networks(void)
 static void on_net_click(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_network_popup(idx);
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void on_cli_click(lv_event_t *e)
@@ -652,9 +668,78 @@ static void on_cli_click(lv_event_t *e)
     intptr_t packed = (intptr_t)lv_event_get_user_data(e);
     int net_i = (int)(packed >> 8);
     int cli_i = (int)(packed & 0xFF);
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_deauth_popup(net_i, cli_i);
-    bsp_display_unlock();
+    ui_display_unlock_safe();
+}
+
+static void stop_obs_main_build_timer(void)
+{
+    if (obs_main_build_timer) {
+        lv_timer_delete(obs_main_build_timer);
+        obs_main_build_timer = NULL;
+    }
+}
+
+static void obs_main_append_network(int net_i)
+{
+    if (!obs_list || net_i < 0 || net_i >= obs_net_count)
+        return;
+
+    obs_network_t *net = &obs_nets[net_i];
+
+    lv_obj_t *nr = lv_btn_create(obs_list);
+    lv_obj_set_size(nr, LV_PCT(100), 26);
+    lv_obj_set_style_bg_color(nr, ui_card_color(), 0);
+    lv_obj_set_style_bg_color(nr, UI_ACCENT_TEAL, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(nr, 4, 0);
+    lv_obj_set_style_pad_hor(nr, 6, 0);
+    lv_obj_add_event_cb(nr, on_net_click, LV_EVENT_CLICKED, (void *)(intptr_t)net_i);
+
+    lv_obj_t *nl = lv_label_create(nr);
+    char ntxt[72];
+    snprintf(ntxt, sizeof(ntxt), "%.32s  CH%d  %dc",
+             net->ssid[0] ? net->ssid : "(hidden)",
+             net->channel, net->client_count);
+    lv_label_set_text(nl, ntxt);
+    lv_label_set_long_mode(nl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(nl, 280);
+    lv_obj_set_style_text_color(nl, UI_ACCENT_CYAN, 0);
+    lv_obj_set_style_text_font(nl, &lv_font_montserrat_10, 0);
+    lv_obj_align(nl, LV_ALIGN_LEFT_MID, 0, 0);
+
+    for (int j = 0; j < net->client_count; j++) {
+        lv_obj_t *cr = lv_btn_create(obs_list);
+        lv_obj_set_size(cr, LV_PCT(100), 20);
+        lv_obj_set_style_bg_color(cr, ui_card_color(), 0);
+        lv_obj_set_style_bg_color(cr, UI_ACCENT_RED, LV_STATE_PRESSED);
+        lv_obj_set_style_radius(cr, 2, 0);
+        lv_obj_set_style_pad_hor(cr, 16, 0);
+        intptr_t packed = ((intptr_t)net_i << 8) | (intptr_t)j;
+        lv_obj_add_event_cb(cr, on_cli_click, LV_EVENT_CLICKED, (void *)packed);
+
+        lv_obj_t *cl = lv_label_create(cr);
+        lv_label_set_text(cl, net->clients[j]);
+        lv_obj_set_style_text_color(cl, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(cl, &lv_font_montserrat_10, 0);
+        lv_obj_align(cl, LV_ALIGN_LEFT_MID, 0, 0);
+    }
+}
+
+static void obs_main_build_step(lv_timer_t *t)
+{
+    (void)t;
+    if (!obs_list) {
+        stop_obs_main_build_timer();
+        return;
+    }
+    int target = obs_main_build_idx + OBS_MAIN_NETS_PER_TICK;
+    if (target > obs_net_count)
+        target = obs_net_count;
+    for (; obs_main_build_idx < target; obs_main_build_idx++)
+        obs_main_append_network(obs_main_build_idx);
+    if (obs_main_build_idx >= obs_net_count)
+        stop_obs_main_build_timer();
 }
 
 static void on_karma_btn(lv_event_t *e);
@@ -663,6 +748,7 @@ static void on_stop_btn(lv_event_t *e);
 
 static void show_main_view(void)
 {
+    stop_obs_main_build_timer();
     sort_networks();
 
     lv_obj_t *scr = ui_screen_clear();
@@ -696,49 +782,9 @@ static void show_main_view(void)
         lv_label_set_text(nl, "No networks found.\nWaiting for sniffer data...");
         lv_obj_set_style_text_color(nl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0);
-    }
-
-    for (int i = 0; i < obs_net_count; i++) {
-        obs_network_t *net = &obs_nets[i];
-
-        /* network row */
-        lv_obj_t *nr = lv_btn_create(obs_list);
-        lv_obj_set_size(nr, LV_PCT(100), 26);
-        lv_obj_set_style_bg_color(nr, ui_card_color(), 0);
-        lv_obj_set_style_bg_color(nr, UI_ACCENT_TEAL, LV_STATE_PRESSED);
-        lv_obj_set_style_radius(nr, 4, 0);
-        lv_obj_set_style_pad_hor(nr, 6, 0);
-        lv_obj_add_event_cb(nr, on_net_click, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-
-        lv_obj_t *nl = lv_label_create(nr);
-        char ntxt[72];
-        snprintf(ntxt, sizeof(ntxt), "%.32s  CH%d  %dc",
-                 net->ssid[0] ? net->ssid : "(hidden)",
-                 net->channel, net->client_count);
-        lv_label_set_text(nl, ntxt);
-        lv_label_set_long_mode(nl, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(nl, 280);
-        lv_obj_set_style_text_color(nl, UI_ACCENT_CYAN, 0);
-        lv_obj_set_style_text_font(nl, &lv_font_montserrat_10, 0);
-        lv_obj_align(nl, LV_ALIGN_LEFT_MID, 0, 0);
-
-        /* client rows */
-        for (int j = 0; j < net->client_count; j++) {
-            lv_obj_t *cr = lv_btn_create(obs_list);
-            lv_obj_set_size(cr, LV_PCT(100), 20);
-            lv_obj_set_style_bg_color(cr, ui_card_color(), 0);
-            lv_obj_set_style_bg_color(cr, UI_ACCENT_RED, LV_STATE_PRESSED);
-            lv_obj_set_style_radius(cr, 2, 0);
-            lv_obj_set_style_pad_hor(cr, 16, 0);
-            intptr_t packed = ((intptr_t)i << 8) | (intptr_t)j;
-            lv_obj_add_event_cb(cr, on_cli_click, LV_EVENT_CLICKED, (void*)packed);
-
-            lv_obj_t *cl = lv_label_create(cr);
-            lv_label_set_text(cl, net->clients[j]);
-            lv_obj_set_style_text_color(cl, ui_muted_color(), 0);
-            lv_obj_set_style_text_font(cl, &lv_font_montserrat_10, 0);
-            lv_obj_align(cl, LV_ALIGN_LEFT_MID, 0, 0);
-        }
+    } else {
+        obs_main_build_idx = 0;
+        obs_main_build_timer = lv_timer_create(obs_main_build_step, OBS_MAIN_BUILD_MS, NULL);
     }
 
     /* bottom bar */
@@ -873,9 +919,9 @@ static void on_stop_btn(lv_event_t *e)
 {
     (void)e;
     stop_all();
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_home_screen();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 /* ================================================================== */
@@ -889,9 +935,12 @@ static void probe_timeout_cb(void *arg)
     probe_collecting = false;
     uart_set_line_callback(NULL);
     ESP_LOGI(TAG, "Probes collected: %d", probe_count);
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) {
+        ESP_LOGW(TAG, "probe_timeout_cb: display lock failed");
+        return;
+    }
     show_probe_picker();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void probe_line_cb(const char *line)
@@ -935,7 +984,7 @@ static void on_karma_btn(lv_event_t *e)
     probe_count = 0;
     probe_collecting = true;
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     {
         lv_obj_t *scr = ui_screen_clear();
         ui_create_top_bar(scr, "Karma", on_back_home, NULL);
@@ -949,7 +998,7 @@ static void on_karma_btn(lv_event_t *e)
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
         lv_obj_align(lb, LV_ALIGN_CENTER, 0, 45);
     }
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 
     ensure_timer(&probe_timer, "obs_probe", probe_timeout_cb);
     uart_set_line_callback(probe_line_cb);
@@ -970,9 +1019,9 @@ static void on_probe_back(lv_event_t *e)
 
     obs_running = true;
     resume_sniffer();
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_main_view();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void on_probe_selected(lv_event_t *e);
@@ -1035,9 +1084,9 @@ static void sd_timeout_cb(void *arg)
     sd_collecting = false;
     uart_set_line_callback(NULL);
     ESP_LOGI(TAG, "SD files: %d", sd_file_count);
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_html_picker();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void sd_line_cb(const char *line)
@@ -1074,7 +1123,7 @@ static void on_probe_selected(lv_event_t *e)
     sd_file_count = 0;
     sd_collecting = true;
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     {
         lv_obj_t *scr = ui_screen_clear();
         ui_create_top_bar(scr, "Karma", NULL, NULL);
@@ -1088,7 +1137,7 @@ static void on_probe_selected(lv_event_t *e)
         lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
         lv_obj_align(lb, LV_ALIGN_CENTER, 0, 45);
     }
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 
     ensure_timer(&sd_timer, "obs_sd", sd_timeout_cb);
     uart_set_line_callback(sd_line_cb);
@@ -1106,9 +1155,9 @@ static void on_html_back(lv_event_t *e)
     sd_collecting = false;
     uart_set_line_callback(NULL);
     if (sd_timer) esp_timer_stop(sd_timer);
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_probe_picker();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void on_html_selected(lv_event_t *e)
@@ -1127,9 +1176,9 @@ static void on_html_selected(lv_event_t *e)
     karma_status_lbl = NULL;
     karma_capture_lbl = NULL;
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_karma_running();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void show_html_picker(void)
@@ -1186,37 +1235,37 @@ static void karma_line_cb(const char *line)
     if (!karma_running) return;
 
     if (strstr(line, "Captive portal started")) {
-        bsp_display_lock(0);
+        if (!ui_display_lock_wait()) return;
         if (karma_status_lbl)
             lv_label_set_text(karma_status_lbl, "Portal active!");
-        bsp_display_unlock();
+        ui_display_unlock_safe();
     }
 
     if (strstr(line, "Client connected")) {
-        bsp_display_lock(0);
+        if (!ui_display_lock_wait()) return;
         if (karma_status_lbl)
             lv_label_set_text(karma_status_lbl, "Client connected!");
-        bsp_display_unlock();
+        ui_display_unlock_safe();
     }
 
     const char *pw;
     if ((pw = strstr(line, "Password:")) != NULL) {
         pw += 9;
         while (*pw == ' ') pw++;
-        bsp_display_lock(0);
+        if (!ui_display_lock_wait()) return;
         if (karma_capture_lbl) {
             char t[128];
             snprintf(t, sizeof(t), "Captured: %s", pw);
             lv_label_set_text(karma_capture_lbl, t);
         }
-        bsp_display_unlock();
+        ui_display_unlock_safe();
     }
 
     if (strstr(line, "Portal data saved")) {
-        bsp_display_lock(0);
+        if (!ui_display_lock_wait()) return;
         if (karma_status_lbl)
             lv_label_set_text(karma_status_lbl, "Data saved to SD!");
-        bsp_display_unlock();
+        ui_display_unlock_safe();
     }
 }
 
@@ -1229,9 +1278,9 @@ static void on_karma_stop(lv_event_t *e)
 
     obs_running = true;
     resume_sniffer();
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_main_view();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void show_karma_running(void)
@@ -1286,6 +1335,19 @@ static void show_karma_running(void)
 /*  Entry point: scan -> sniffer -> main view                          */
 /* ================================================================== */
 
+static void observer_apply_main_view(void *unused)
+{
+    (void)unused;
+    show_main_view();
+}
+
+static void observer_lvgl_dispatch_job(void *unused)
+{
+    (void)unused;
+    if (!ui_lvgl_async_call(observer_apply_main_view, NULL))
+        ESP_LOGW(TAG, "observer: failed to schedule main view");
+}
+
 static void on_scan_complete(const char **lines, int count)
 {
     ESP_LOGI(TAG, "Scan callback: %d lines", count);
@@ -1317,9 +1379,10 @@ static void on_scan_complete(const char **lines, int count)
     uart_send_command("start_sniffer_noscan");
     start_poll_timer(POLL_INTERVAL_US);
 
-    bsp_display_lock(0);
-    show_main_view();
-    bsp_display_unlock();
+    if (!parse_worker_post(observer_lvgl_dispatch_job, NULL)) {
+        if (!ui_lvgl_async_call(observer_apply_main_view, NULL))
+            ESP_LOGE(TAG, "observer: main view schedule failed");
+    }
 }
 
 void show_network_observer_screen(void)

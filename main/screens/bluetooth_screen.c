@@ -4,7 +4,7 @@
 #include "uart_handler.h"
 #include "cardkb.h"
 #include "psram_dynarr.h"
-#include "bsp/m5stack_core_s3.h"
+#include "parse_worker.h"
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
@@ -28,9 +28,9 @@ static void show_bt_locator_scanning(void);
 static void on_back_home(lv_event_t *e)
 {
     (void)e;
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_home_screen();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void on_back_bt_menu(lv_event_t *e)
@@ -38,9 +38,9 @@ static void on_back_bt_menu(lv_event_t *e)
     (void)e;
     uart_set_line_callback(NULL);
     uart_send_command("stop");
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_bt_menu();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 /* ================================================================== */
@@ -65,7 +65,7 @@ static void airtag_line_cb(const char *line)
     int at = 0, st = 0;
     if (sscanf(line, "%d,%d", &at, &st) != 2) return;
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     if (airtag_count_lbl) {
         char buf[16];
         snprintf(buf, sizeof(buf), "%d", at);
@@ -76,7 +76,7 @@ static void airtag_line_cb(const char *line)
         snprintf(buf, sizeof(buf), "%d", st);
         lv_label_set_text(smarttag_count_lbl, buf);
     }
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void poll_airtag_kb(lv_timer_t *t)
@@ -180,7 +180,93 @@ static int bt_total = 0;
 static int bt_airtags = 0;
 static int bt_smarttags = 0;
 
-/* ---- Tracking sub-screen ---- */
+#define BT_ROWS_PER_TICK 5
+#define BT_BUILD_TIMER_MS 28
+
+static lv_obj_t *bt_list_container = NULL;
+static lv_timer_t *bt_build_timer = NULL;
+static int bt_build_idx;
+
+static void stop_bt_build_timer(void)
+{
+    if (bt_build_timer) {
+        lv_timer_delete(bt_build_timer);
+        bt_build_timer = NULL;
+    }
+}
+
+static void on_bt_device_clicked(lv_event_t *e);
+
+static void bt_build_one_device_row(int i)
+{
+    if (!bt_list_container || i < 0 || i >= bt_device_count)
+        return;
+
+    lv_obj_t *btn = lv_btn_create(bt_list_container);
+    lv_obj_set_size(btn, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
+    lv_obj_set_style_bg_color(btn, UI_ACCENT_PURPLE, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_set_style_pad_all(btn, 4, 0);
+    lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(btn, 6, 0);
+    lv_obj_add_event_cb(btn, on_bt_device_clicked, LV_EVENT_CLICKED,
+                        (void *)(intptr_t)i);
+
+    lv_obj_t *rssi_lbl = lv_label_create(btn);
+    char rssi_txt[10];
+    snprintf(rssi_txt, sizeof(rssi_txt), "%d", bt_devices[i].rssi);
+    lv_label_set_text(rssi_lbl, rssi_txt);
+    lv_obj_set_style_text_font(rssi_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_width(rssi_lbl, 30);
+
+    lv_color_t rssi_color;
+    if (bt_devices[i].rssi > -50)       rssi_color = UI_ACCENT_GREEN;
+    else if (bt_devices[i].rssi > -70)  rssi_color = UI_ACCENT_ORANGE;
+    else                                rssi_color = UI_ACCENT_RED;
+    lv_obj_set_style_text_color(rssi_lbl, rssi_color, 0);
+
+    lv_obj_t *info = lv_obj_create(btn);
+    lv_obj_set_size(info, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(info, 0, 0);
+    lv_obj_set_style_pad_all(info, 0, 0);
+    lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_grow(info, 1);
+    lv_obj_clear_flag(info, LV_OBJ_FLAG_SCROLLABLE);
+
+    if (bt_devices[i].name[0]) {
+        lv_obj_t *name_l = lv_label_create(info);
+        lv_label_set_text(name_l, bt_devices[i].name);
+        lv_obj_set_style_text_color(name_l, ui_text_color(), 0);
+        lv_obj_set_style_text_font(name_l, &lv_font_montserrat_10, 0);
+        lv_obj_set_width(name_l, LV_PCT(100));
+        lv_label_set_long_mode(name_l, LV_LABEL_LONG_DOT);
+    }
+
+    lv_obj_t *mac_l = lv_label_create(info);
+    lv_label_set_text(mac_l, bt_devices[i].mac);
+    lv_obj_set_style_text_color(mac_l, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(mac_l, &lv_font_montserrat_10, 0);
+}
+
+static void bt_build_step(lv_timer_t *t)
+{
+    (void)t;
+    if (!bt_list_container) {
+        stop_bt_build_timer();
+        return;
+    }
+    int target = bt_build_idx + BT_ROWS_PER_TICK;
+    if (target > bt_device_count)
+        target = bt_device_count;
+    for (; bt_build_idx < target; bt_build_idx++)
+        bt_build_one_device_row(bt_build_idx);
+    if (bt_build_idx >= bt_device_count)
+        stop_bt_build_timer();
+}
 
 static lv_obj_t *track_rssi_lbl = NULL;
 static lv_obj_t *track_name_lbl = NULL;
@@ -216,7 +302,7 @@ static void track_line_cb(const char *line)
             name[--len] = '\0';
     }
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     if (track_rssi_lbl) {
         char buf[32];
         snprintf(buf, sizeof(buf), "%d dBm", rssi);
@@ -231,7 +317,7 @@ static void track_line_cb(const char *line)
     if (track_name_lbl && name[0]) {
         lv_label_set_text(track_name_lbl, name);
     }
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void poll_track_kb(lv_timer_t *t)
@@ -304,9 +390,9 @@ static void on_back_bt_list(lv_event_t *e)
     stop_track_kb_timer();
     uart_set_line_callback(NULL);
     uart_send_command("stop");
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait()) return;
     show_bt_device_list();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 /* ---- Device list click ---- */
@@ -347,6 +433,8 @@ static void show_bt_device_list(void)
 {
     stop_track_kb_timer();
     stop_locator_kb_timer();
+    stop_bt_build_timer();
+    bt_list_container = NULL;
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "BT Locator", on_back_bt_menu, NULL);
@@ -370,7 +458,8 @@ static void show_bt_device_list(void)
     lv_obj_set_style_pad_row(list, 2, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 
-    /* Summary row */
+    bt_list_container = list;
+
     lv_obj_t *summary = lv_obj_create(list);
     lv_obj_set_size(summary, LV_PCT(100), LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(summary, ui_card_color(), 0);
@@ -390,61 +479,23 @@ static void show_bt_device_list(void)
     lv_obj_set_width(sum_lbl, LV_PCT(100));
     lv_obj_set_style_text_align(sum_lbl, LV_TEXT_ALIGN_CENTER, 0);
 
-    /* Device rows */
-    for (int i = 0; i < bt_device_count; i++) {
-        lv_obj_t *btn = lv_btn_create(list);
-        lv_obj_set_size(btn, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
-        lv_obj_set_style_bg_color(btn, UI_ACCENT_PURPLE, LV_STATE_PRESSED);
-        lv_obj_set_style_radius(btn, 6, 0);
-        lv_obj_set_style_pad_all(btn, 4, 0);
-        lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_START,
-                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_column(btn, 6, 0);
-        lv_obj_add_event_cb(btn, on_bt_device_clicked, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)i);
-
-        /* RSSI */
-        lv_obj_t *rssi_lbl = lv_label_create(btn);
-        char rssi_txt[10];
-        snprintf(rssi_txt, sizeof(rssi_txt), "%d", bt_devices[i].rssi);
-        lv_label_set_text(rssi_lbl, rssi_txt);
-        lv_obj_set_style_text_font(rssi_lbl, &lv_font_montserrat_10, 0);
-        lv_obj_set_width(rssi_lbl, 30);
-
-        lv_color_t rssi_color;
-        if (bt_devices[i].rssi > -50)       rssi_color = UI_ACCENT_GREEN;
-        else if (bt_devices[i].rssi > -70)  rssi_color = UI_ACCENT_ORANGE;
-        else                                rssi_color = UI_ACCENT_RED;
-        lv_obj_set_style_text_color(rssi_lbl, rssi_color, 0);
-
-        /* Info column */
-        lv_obj_t *info = lv_obj_create(btn);
-        lv_obj_set_size(info, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(info, 0, 0);
-        lv_obj_set_style_pad_all(info, 0, 0);
-        lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_flex_grow(info, 1);
-        lv_obj_clear_flag(info, LV_OBJ_FLAG_SCROLLABLE);
-
-        if (bt_devices[i].name[0]) {
-            lv_obj_t *name_l = lv_label_create(info);
-            lv_label_set_text(name_l, bt_devices[i].name);
-            lv_obj_set_style_text_color(name_l, ui_text_color(), 0);
-            lv_obj_set_style_text_font(name_l, &lv_font_montserrat_10, 0);
-            lv_obj_set_width(name_l, LV_PCT(100));
-            lv_label_set_long_mode(name_l, LV_LABEL_LONG_DOT);
-        }
-
-        lv_obj_t *mac_l = lv_label_create(info);
-        lv_label_set_text(mac_l, bt_devices[i].mac);
-        lv_obj_set_style_text_color(mac_l, ui_muted_color(), 0);
-        lv_obj_set_style_text_font(mac_l, &lv_font_montserrat_10, 0);
-    }
+    bt_build_idx = 0;
+    bt_build_timer = lv_timer_create(bt_build_step, BT_BUILD_TIMER_MS, NULL);
 
     locator_kb_timer = lv_timer_create(poll_locator_kb, 50, NULL);
+}
+
+static void bt_apply_scan_lvgl(void *unused)
+{
+    (void)unused;
+    show_bt_device_list();
+}
+
+static void bt_lvgl_dispatch_job(void *unused)
+{
+    (void)unused;
+    if (!ui_lvgl_async_call(bt_apply_scan_lvgl, NULL))
+        ESP_LOGW(TAG, "failed to schedule BT device list UI");
 }
 
 /* ---- Parse scan_bt output (collected) ---- */
@@ -514,9 +565,10 @@ static void bt_scan_complete(const char **lines, int line_count)
     ESP_LOGI(TAG, "BT scan: %d devices, %d AirTags, %d SmartTags",
              bt_device_count, bt_airtags, bt_smarttags);
 
-    bsp_display_lock(0);
-    show_bt_device_list();
-    bsp_display_unlock();
+    if (!parse_worker_post(bt_lvgl_dispatch_job, NULL)) {
+        if (!ui_lvgl_async_call(bt_apply_scan_lvgl, NULL))
+            ESP_LOGE(TAG, "BT UI schedule failed");
+    }
 }
 
 static void show_bt_locator_scanning(void)
@@ -571,6 +623,7 @@ static void show_bt_menu(void)
     stop_airtag_kb_timer();
     stop_locator_kb_timer();
     stop_track_kb_timer();
+    stop_bt_build_timer();
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Bluetooth", on_back_home, NULL);

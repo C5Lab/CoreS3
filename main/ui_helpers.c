@@ -4,6 +4,9 @@
 #include "nvs.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "bsp/m5stack_core_s3.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define NVS_NAMESPACE       "settings"
 #define NVS_KEY_DARK_MODE   "dark_mode"
@@ -436,4 +439,31 @@ void show_settings_screen(void)
     }
 
     lv_obj_add_event_cb(udd, on_uart_port_changed, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
+bool ui_display_lock_wait(void)
+{
+    return bsp_display_lock(portMAX_DELAY);
+}
+
+void ui_display_unlock_safe(void)
+{
+    bsp_display_unlock();
+}
+
+bool ui_lvgl_async_call(lv_async_cb_t cb, void *user_data)
+{
+    if (!cb)
+        return false;
+    if (!bsp_display_lock(portMAX_DELAY)) {
+        ESP_LOGW(TAG, "ui_lvgl_async_call: display lock failed");
+        return false;
+    }
+    lv_result_t r = lv_async_call(cb, user_data);
+    bsp_display_unlock();
+    if (r != LV_RESULT_OK) {
+        ESP_LOGW(TAG, "lv_async_call failed");
+        return false;
+    }
+    return true;
 }

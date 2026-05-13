@@ -6,7 +6,6 @@
 #include "cardkb.h"
 #include "led_indicator.h"
 #include "esp_log.h"
-#include "bsp/m5stack_core_s3.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include <string.h>
@@ -21,6 +20,51 @@ static const char *TAG = "subghz_hunter";
 #define SIGNAL_ROW_POOL_SIZE  10
 #define UI_TICK_MS            120
 #define STATUS_BUF_LEN        48
+
+/* Cap virtual scroll height so lv_coord / layout stay stable with huge captures. */
+#define SIGNAL_VSCROLL_MAX_PX 28000
+
+static int64_t hunter_real_content_h(size_t total)
+{
+    return (int64_t)total * (int64_t)SIGNAL_ROW_HEIGHT;
+}
+
+static lv_coord_t hunter_virt_content_h(size_t total)
+{
+    int64_t r = hunter_real_content_h(total);
+    if (r > SIGNAL_VSCROLL_MAX_PX)
+        return (lv_coord_t)SIGNAL_VSCROLL_MAX_PX;
+    return (lv_coord_t)r;
+}
+
+static size_t hunter_scroll_to_first_index(lv_coord_t scroll_y, size_t total)
+{
+    if (total == 0)
+        return 0;
+    int64_t real = hunter_real_content_h(total);
+    lv_coord_t virt = hunter_virt_content_h(total);
+    if (real <= (int64_t)virt)
+        return (size_t)scroll_y / SIGNAL_ROW_HEIGHT;
+    int64_t eff = (int64_t)scroll_y * real / (int64_t)virt;
+    size_t idx = (size_t)(eff / SIGNAL_ROW_HEIGHT);
+    if (idx >= total)
+        idx = total - 1;
+    return idx;
+}
+
+static lv_coord_t hunter_row_y(size_t signal_index, size_t total)
+{
+    if (total == 0)
+        return 0;
+    lv_coord_t virt = hunter_virt_content_h(total);
+    int64_t real = hunter_real_content_h(total);
+    if (real <= (int64_t)virt)
+        return (lv_coord_t)((int64_t)signal_index * SIGNAL_ROW_HEIGHT);
+    if (total == 1)
+        return 0;
+    return (lv_coord_t)((int64_t)signal_index * ((int64_t)virt - SIGNAL_ROW_HEIGHT) / (int64_t)(total - 1));
+}
+
 #define COL_IDX_W             22
 #define COL_TYPE_W            50
 #define COL_FREQ_W            50
@@ -381,7 +425,7 @@ static void refresh_signal_list_view(void)
     if (scroll_y < 0)
         scroll_y = 0;
 
-    first_index = (size_t)scroll_y / SIGNAL_ROW_HEIGHT;
+    first_index = hunter_scroll_to_first_index(scroll_y, total);
     copy_signal_window(first_index, window, SIGNAL_ROW_POOL_SIZE, &copied, &total);
 
     update_signal_count_label(total);
@@ -397,7 +441,7 @@ static void refresh_signal_list_view(void)
     }
 
     lv_obj_add_flag(s_empty_lbl, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_height(s_sig_spacer, (lv_coord_t)(total * SIGNAL_ROW_HEIGHT));
+    lv_obj_set_height(s_sig_spacer, hunter_virt_content_h(total));
 
     for (int i = 0; i < SIGNAL_ROW_POOL_SIZE; i++) {
         hunter_row_view_t *view = &s_row_pool[i];
@@ -413,7 +457,7 @@ static void refresh_signal_list_view(void)
         size_t signal_index = first_index + (size_t)i;
         const hunter_signal_t *sig = &window[i];
 
-        lv_obj_set_pos(view->row, 0, (lv_coord_t)(signal_index * SIGNAL_ROW_HEIGHT));
+        lv_obj_set_pos(view->row, 0, hunter_row_y(signal_index, total));
         lv_label_set_text_fmt(view->idx, "%d", sig->idx);
         lv_label_set_text(view->type, sig->type);
         lv_obj_set_style_text_color(view->type,
@@ -571,19 +615,22 @@ static void ui_tick_cb(lv_timer_t *t)
     status_dirty = s_status_dirty;
     s_status_dirty = false;
 
-    bsp_display_lock(0);
+    if (!ui_display_lock_wait())
+        return;
     if (status_dirty)
         apply_status_to_label();
     if (history_dirty && s_follow_latest && s_sig_list) {
         total = signal_count_snapshot();
-        target_y = (lv_coord_t)(total * SIGNAL_ROW_HEIGHT) - lv_obj_get_height(s_sig_list);
+        lv_coord_t virt = hunter_virt_content_h(total);
+        lv_coord_t list_h = lv_obj_get_height(s_sig_list);
+        target_y = virt - list_h;
         if (target_y < 0)
             target_y = 0;
         lv_obj_scroll_to_y(s_sig_list, target_y, LV_ANIM_OFF);
     }
     if (history_dirty || s_psram_exhausted)
         refresh_signal_list_view();
-    bsp_display_unlock();
+    ui_display_unlock_safe();
 }
 
 static void on_signal_list_scroll(lv_event_t *e)
@@ -599,7 +646,8 @@ static void on_signal_list_scroll(lv_event_t *e)
     if (scroll_y < 0)
         scroll_y = 0;
 
-    max_scroll = (lv_coord_t)(total * SIGNAL_ROW_HEIGHT) - lv_obj_get_height(s_sig_list);
+    lv_coord_t virt = hunter_virt_content_h(total);
+    max_scroll = virt - lv_obj_get_height(s_sig_list);
     if (max_scroll < 0)
         max_scroll = 0;
 

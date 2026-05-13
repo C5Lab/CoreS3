@@ -99,4 +99,18 @@ void load_settings_from_nvs(void);
 /* ========== Settings screen ========== */
 void show_settings_screen(void);
 
+/**
+ * Take the LVGL display mutex, waiting indefinitely. Use from non-LVGL
+ * threads (e.g. uart_rx) before any lv_* API.
+ */
+bool ui_display_lock_wait(void);
+
+void ui_display_unlock_safe(void);
+
+/**
+ * Queue work on the LVGL task from another thread: takes the display mutex,
+ * calls lv_async_call, then releases. Safe from uart_rx / parse_worker.
+ */
+bool ui_lvgl_async_call(lv_async_cb_t cb, void *user_data);
+
 #endif

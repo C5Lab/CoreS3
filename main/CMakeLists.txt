@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "uart_handler.c"
+        "parse_worker.c"
         "ui_helpers.c"
         "lvgl_psram_malloc.c"
         "psram_dynarr.c"

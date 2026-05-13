@@ -6,7 +6,6 @@
 #include "cardkb.h"
 #include "psram_dynarr.h"
 #include "esp_log.h"
-#include "bsp/m5stack_core_s3.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -121,7 +120,8 @@ static void on_list_received(const char **lines, int count)
 
     /* Defer all LVGL work to the LVGL task to avoid hogging core 0 in uart_rx
      * and starving IDLE0 (would trip task_wdt for ~50 signals). */
-    lv_async_call(rebuild_list_async, NULL);
+    if (!ui_lvgl_async_call(rebuild_list_async, NULL))
+        ESP_LOGW(TAG, "rebuild_list_async schedule failed");
 }
 
 static void on_delete_tap(lv_event_t *e)
@@ -343,7 +343,8 @@ static void on_import_done(const char **lines, int count)
     s_imported_count = imported;
 
     /* Update label + chain follow-up subghz_list on the LVGL task. */
-    lv_async_call(import_done_async, NULL);
+    if (!ui_lvgl_async_call(import_done_async, NULL))
+        ESP_LOGW(TAG, "import_done_async schedule failed");
 
     uart_send_command("subghz_list");
     uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);

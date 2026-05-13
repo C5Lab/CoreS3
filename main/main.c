@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
 #include "uart_handler.h"
+#include "parse_worker.h"
 #include "cardkb.h"
 #include "led_indicator.h"
 #include "ui_helpers.h"
@@ -273,6 +274,8 @@ void app_main(void)
     /* BSP: display + touch + LVGL */
     bsp_display_start();
     bsp_display_brightness_set(80);
+
+    parse_worker_init();
 
     /* UART to ESP32C5 */
     uart_handler_init();
