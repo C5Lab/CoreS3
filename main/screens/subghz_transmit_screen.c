@@ -15,6 +15,8 @@
 static const char *TAG = "subghz_tx";
 
 #define SUBGHZ_TX_SIG_HARD_CAP 2048
+#define TX_ROW_HEIGHT          32
+#define TX_ROW_POOL_SIZE       8
 
 typedef struct {
     int   idx;
@@ -26,20 +28,35 @@ typedef struct {
     char  mf[32];
 } tx_signal_t;
 
+typedef struct {
+    lv_obj_t *row;
+    lv_obj_t *idx;
+    lv_obj_t *type;
+    lv_obj_t *freq;
+    lv_obj_t *info;
+    lv_obj_t *play;
+    int       sig_idx;
+} tx_row_view_t;
+
 static tx_signal_t *s_sigs;
 static int          s_sig_cap;
 static int          s_sig_count;
 static lv_obj_t    *s_list;
+static lv_obj_t    *s_list_spacer;
+static lv_obj_t    *s_empty_lbl;
 static lv_obj_t    *s_status_lbl;
 static lv_obj_t    *s_tx_popup;
 static int          s_pending_tx_idx;
 static lv_timer_t  *s_kb_timer;
+static tx_row_view_t s_row_pool[TX_ROW_POOL_SIZE];
 
 static void on_back(lv_event_t *e);
 static void kb_poll_cb(lv_timer_t *t);
 
-static void build_list(void);
 static void on_signal_tap(lv_event_t *e);
+static void on_tx_list_scroll(lv_event_t *e);
+static void refresh_tx_list_view(void);
+static void configure_tx_row(tx_row_view_t *view);
 static void fill_signal(tx_signal_t *dst, const subghz_signal_info_t *src);
 
 static void fill_signal(tx_signal_t *dst, const subghz_signal_info_t *src)
@@ -78,74 +95,132 @@ static void on_list_received(const char **lines, int count)
     }
 
     bsp_display_lock(0);
-    build_list();
+    if (s_status_lbl) {
+        if (s_sig_count == 0) {
+            lv_label_set_text(s_status_lbl, "No stored signals");
+            lv_obj_set_style_text_color(s_status_lbl, ui_muted_color(), 0);
+        } else {
+            lv_label_set_text_fmt(s_status_lbl, "%d signal%s", s_sig_count,
+                                  s_sig_count == 1 ? "" : "s");
+            lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_CYAN, 0);
+        }
+    }
+    if (s_list_spacer)
+        lv_obj_set_height(s_list_spacer, (lv_coord_t)(s_sig_count * TX_ROW_HEIGHT));
+    if (s_list)
+        lv_obj_scroll_to_y(s_list, 0, LV_ANIM_OFF);
+    refresh_tx_list_view();
     bsp_display_unlock();
 }
 
-static void build_list(void)
+static void configure_tx_row(tx_row_view_t *view)
 {
-    if (!s_list) return;
-    lv_obj_clean(s_list);
+    if (!view || !s_list)
+        return;
+
+    view->row = lv_obj_create(s_list);
+    lv_obj_set_size(view->row, LV_PCT(100), TX_ROW_HEIGHT - 3);
+    lv_obj_set_flex_flow(view->row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(view->row, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(view->row, 4, 0);
+    lv_obj_set_style_pad_gap(view->row, 6, 0);
+    lv_obj_set_style_bg_color(view->row, ui_card_color(), 0);
+    lv_obj_set_style_bg_color(view->row, ui_card_pressed_color(), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(view->row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(view->row, 0, 0);
+    lv_obj_set_style_radius(view->row, 5, 0);
+    lv_obj_clear_flag(view->row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(view->row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(view->row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(view->row, on_signal_tap, LV_EVENT_CLICKED, view);
+
+    view->idx = lv_label_create(view->row);
+    lv_obj_set_width(view->idx, 22);
+    lv_obj_set_style_text_font(view->idx, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->idx, UI_ACCENT_GREEN, 0);
+
+    view->type = lv_label_create(view->row);
+    lv_obj_set_width(view->type, 60);
+    lv_obj_set_style_text_font(view->type, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->type, ui_text_color(), 0);
+    lv_label_set_long_mode(view->type, LV_LABEL_LONG_CLIP);
+
+    view->freq = lv_label_create(view->row);
+    lv_obj_set_width(view->freq, 50);
+    lv_obj_set_style_text_font(view->freq, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->freq, ui_muted_color(), 0);
+
+    view->info = lv_label_create(view->row);
+    lv_obj_set_flex_grow(view->info, 1);
+    lv_obj_set_style_text_font(view->info, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(view->info, UI_ACCENT_CYAN, 0);
+    lv_label_set_long_mode(view->info, LV_LABEL_LONG_CLIP);
+
+    view->play = lv_label_create(view->row);
+    lv_obj_set_style_text_font(view->play, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(view->play, UI_ACCENT_GREEN, 0);
+    lv_label_set_text(view->play, LV_SYMBOL_PLAY);
+
+    view->sig_idx = -1;
+}
+
+static void refresh_tx_list_view(void)
+{
+    if (!s_list || !s_list_spacer || !s_empty_lbl)
+        return;
 
     if (s_sig_count == 0) {
-        lv_obj_t *l = lv_label_create(s_list);
-        lv_label_set_text(l, "No stored signals");
-        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_clear_flag(s_empty_lbl, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_height(s_list_spacer, 1);
+        for (int i = 0; i < TX_ROW_POOL_SIZE; i++) {
+            if (s_row_pool[i].row)
+                lv_obj_add_flag(s_row_pool[i].row, LV_OBJ_FLAG_HIDDEN);
+        }
         return;
     }
+    lv_obj_add_flag(s_empty_lbl, LV_OBJ_FLAG_HIDDEN);
 
-    for (int i = 0; i < s_sig_count; i++) {
-        tx_signal_t *sig = &s_sigs[i];
+    lv_coord_t scroll_y = lv_obj_get_scroll_y(s_list);
+    if (scroll_y < 0)
+        scroll_y = 0;
 
-        lv_obj_t *row = lv_obj_create(s_list);
-        lv_obj_set_size(row, LV_PCT(100), 32);
-        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START,
-                              LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_all(row, 4, 0);
-        lv_obj_set_style_pad_gap(row, 6, 0);
-        lv_obj_set_style_bg_color(row, ui_card_color(), 0);
-        lv_obj_set_style_bg_color(row, ui_card_pressed_color(), LV_STATE_PRESSED);
-        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(row, 0, 0);
-        lv_obj_set_style_radius(row, 5, 0);
-        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(row, on_signal_tap, LV_EVENT_CLICKED, (void *)(intptr_t)sig->idx);
+    int first_index = (int)(scroll_y / TX_ROW_HEIGHT);
+    if (first_index < 0)
+        first_index = 0;
+    if (first_index >= s_sig_count)
+        first_index = s_sig_count - 1;
 
-        lv_obj_t *l;
+    for (int i = 0; i < TX_ROW_POOL_SIZE; i++) {
+        tx_row_view_t *view = &s_row_pool[i];
 
-        l = lv_label_create(row);
-        lv_obj_set_width(l, 22);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, UI_ACCENT_GREEN, 0);
-        lv_label_set_text_fmt(l, "%d", sig->idx);
+        if (!view->row)
+            continue;
 
-        l = lv_label_create(row);
-        lv_obj_set_width(l, 60);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, ui_text_color(), 0);
-        lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-        lv_label_set_text(l, sig->type);
+        int sig_index = first_index + i;
+        if (sig_index >= s_sig_count) {
+            lv_obj_add_flag(view->row, LV_OBJ_FLAG_HIDDEN);
+            view->sig_idx = -1;
+            continue;
+        }
 
-        l = lv_label_create(row);
-        lv_obj_set_width(l, 50);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
-        lv_label_set_text_fmt(l, "%d.%02d", (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100);
+        const tx_signal_t *sig = &s_sigs[sig_index];
 
-        l = lv_label_create(row);
-        lv_obj_set_flex_grow(l, 1);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
-        lv_obj_set_style_text_color(l, UI_ACCENT_CYAN, 0);
-        lv_label_set_long_mode(l, LV_LABEL_LONG_CLIP);
-        lv_label_set_text(l, sig->mf[0] ? sig->mf : sig->serial);
-
-        l = lv_label_create(row);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(l, UI_ACCENT_GREEN, 0);
-        lv_label_set_text(l, LV_SYMBOL_PLAY);
+        lv_obj_set_pos(view->row, 0, (lv_coord_t)(sig_index * TX_ROW_HEIGHT));
+        lv_label_set_text_fmt(view->idx, "%d", sig->idx);
+        lv_label_set_text(view->type, sig->type);
+        lv_label_set_text_fmt(view->freq, "%d.%02d",
+                              (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100);
+        lv_label_set_text(view->info, sig->mf[0] && strcmp(sig->mf, "--") != 0 ? sig->mf : sig->serial);
+        view->sig_idx = sig->idx;
+        lv_obj_clear_flag(view->row, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+static void on_tx_list_scroll(lv_event_t *e)
+{
+    (void)e;
+    refresh_tx_list_view();
 }
 
 static void close_tx_popup(void)
@@ -190,21 +265,25 @@ static tx_signal_t *find_sig_by_idx(int idx)
 
 static void on_signal_tap(lv_event_t *e)
 {
-    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    tx_row_view_t *view = (tx_row_view_t *)lv_event_get_user_data(e);
+    if (!view || view->sig_idx < 0)
+        return;
+
+    int idx = view->sig_idx;
     if (s_tx_popup) close_tx_popup();
 
     s_pending_tx_idx = idx;
     tx_signal_t *sig = find_sig_by_idx(idx);
 
     s_tx_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_tx_popup, 220, 120);
+    lv_obj_set_size(s_tx_popup, 280, 180);
     lv_obj_center(s_tx_popup);
     style_popup_card(s_tx_popup, 10, UI_ACCENT_GREEN);
     lv_obj_set_flex_flow(s_tx_popup, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_tx_popup, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(s_tx_popup, 10, 0);
-    lv_obj_set_style_pad_gap(s_tx_popup, 8, 0);
+    lv_obj_set_style_pad_all(s_tx_popup, 12, 0);
+    lv_obj_set_style_pad_gap(s_tx_popup, 10, 0);
     lv_obj_clear_flag(s_tx_popup, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *info = lv_label_create(s_tx_popup);
@@ -216,11 +295,11 @@ static void on_signal_tap(lv_event_t *e)
     else
         lv_label_set_text_fmt(info, "Signal #%d", idx);
     lv_obj_set_style_text_color(info, ui_text_color(), 0);
-    lv_obj_set_style_text_font(info, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(info, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_align(info, LV_TEXT_ALIGN_CENTER, 0);
 
     lv_obj_t *btn_row = lv_obj_create(s_tx_popup);
-    lv_obj_set_size(btn_row, LV_PCT(100), 32);
+    lv_obj_set_size(btn_row, LV_PCT(100), 64);
     lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_EVENLY,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -230,25 +309,25 @@ static void on_signal_tap(lv_event_t *e)
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *tx_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(tx_btn, 90, 28);
+    lv_obj_set_size(tx_btn, 130, 56);
     lv_obj_set_style_bg_color(tx_btn, UI_ACCENT_GREEN, 0);
-    lv_obj_set_style_radius(tx_btn, 6, 0);
+    lv_obj_set_style_radius(tx_btn, 8, 0);
     lv_obj_add_event_cb(tx_btn, on_tx_confirm, LV_EVENT_CLICKED, NULL);
     lv_obj_t *tl = lv_label_create(tx_btn);
     lv_label_set_text(tl, LV_SYMBOL_PLAY " Transmit");
     lv_obj_set_style_text_color(tl, lv_color_white(), 0);
-    lv_obj_set_style_text_font(tl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(tl, &lv_font_montserrat_16, 0);
     lv_obj_center(tl);
 
     lv_obj_t *cancel_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(cancel_btn, 80, 28);
+    lv_obj_set_size(cancel_btn, 90, 40);
     lv_obj_set_style_bg_color(cancel_btn, ui_muted_color(), 0);
-    lv_obj_set_style_radius(cancel_btn, 6, 0);
+    lv_obj_set_style_radius(cancel_btn, 8, 0);
     lv_obj_add_event_cb(cancel_btn, on_tx_cancel, LV_EVENT_CLICKED, NULL);
     lv_obj_t *cl = lv_label_create(cancel_btn);
     lv_label_set_text(cl, "Cancel");
     lv_obj_set_style_text_color(cl, lv_color_white(), 0);
-    lv_obj_set_style_text_font(cl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(cl, &lv_font_montserrat_14, 0);
     lv_obj_center(cl);
 }
 
@@ -274,9 +353,12 @@ void show_subghz_transmit_screen(void)
 {
     s_sig_count = 0;
     s_list      = NULL;
+    s_list_spacer = NULL;
+    s_empty_lbl = NULL;
     s_status_lbl = NULL;
     s_tx_popup  = NULL;
     s_kb_timer  = NULL;
+    memset(s_row_pool, 0, sizeof(s_row_pool));
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Transmit", on_back, NULL);
@@ -291,13 +373,30 @@ void show_subghz_transmit_screen(void)
     s_list = lv_obj_create(scr);
     lv_obj_set_size(s_list, LV_PCT(100), 240 - 54);
     lv_obj_set_y(s_list, 54);
-    lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(s_list, 4, 0);
-    lv_obj_set_style_pad_gap(s_list, 3, 0);
+    lv_obj_set_style_pad_all(s_list, 0, 0);
     lv_obj_set_style_bg_color(s_list, ui_bg_color(), 0);
     lv_obj_set_style_bg_opa(s_list, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_add_event_cb(s_list, on_tx_list_scroll, LV_EVENT_SCROLL, NULL);
+
+    s_list_spacer = lv_obj_create(s_list);
+    lv_obj_set_pos(s_list_spacer, 0, 0);
+    lv_obj_set_size(s_list_spacer, 1, 1);
+    lv_obj_set_style_bg_opa(s_list_spacer, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_list_spacer, 0, 0);
+    lv_obj_clear_flag(s_list_spacer, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_empty_lbl = lv_label_create(s_list);
+    lv_obj_set_pos(s_empty_lbl, 8, 6);
+    lv_obj_set_style_text_color(s_empty_lbl, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(s_empty_lbl, &lv_font_montserrat_12, 0);
+    lv_label_set_text(s_empty_lbl, "No stored signals");
+
+    for (int i = 0; i < TX_ROW_POOL_SIZE; i++)
+        configure_tx_row(&s_row_pool[i]);
+
+    refresh_tx_list_view();
 
     uart_send_command("subghz_list");
     uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);

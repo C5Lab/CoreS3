@@ -22,11 +22,54 @@ static const char *TAG = "subghz_listen";
 #define SIGNAL_CHUNK_CAPACITY 64
 #define SIGNAL_ROW_HEIGHT 18
 #define SIGNAL_ROW_POOL_SIZE 10
+/* Cap virtual scroll height so lv_coord / layout stay stable with huge captures. */
+#define SIGNAL_VSCROLL_MAX_PX 28000
 #define COL_IDX_W         22
 #define COL_TYPE_W        50
 #define COL_FREQ_W        50
 #define COL_MF_W          90
 #define COL_SER_W         55
+
+static int64_t listen_real_content_h(size_t total)
+{
+    return (int64_t)total * (int64_t)SIGNAL_ROW_HEIGHT;
+}
+
+static lv_coord_t listen_virt_content_h(size_t total)
+{
+    int64_t r = listen_real_content_h(total);
+    if (r > SIGNAL_VSCROLL_MAX_PX)
+        return (lv_coord_t)SIGNAL_VSCROLL_MAX_PX;
+    return (lv_coord_t)r;
+}
+
+static size_t listen_scroll_to_first_index(lv_coord_t scroll_y, size_t total)
+{
+    if (total == 0)
+        return 0;
+    int64_t real = listen_real_content_h(total);
+    lv_coord_t virt = listen_virt_content_h(total);
+    if (real <= (int64_t)virt)
+        return (size_t)scroll_y / SIGNAL_ROW_HEIGHT;
+    int64_t eff = (int64_t)scroll_y * real / (int64_t)virt;
+    size_t idx = (size_t)(eff / SIGNAL_ROW_HEIGHT);
+    if (idx >= total)
+        idx = total - 1;
+    return idx;
+}
+
+static lv_coord_t listen_row_y(size_t signal_index, size_t total)
+{
+    if (total == 0)
+        return 0;
+    lv_coord_t virt = listen_virt_content_h(total);
+    int64_t real = listen_real_content_h(total);
+    if (real <= (int64_t)virt)
+        return (lv_coord_t)((int64_t)signal_index * SIGNAL_ROW_HEIGHT);
+    if (total == 1)
+        return 0;
+    return (lv_coord_t)((int64_t)signal_index * ((int64_t)virt - SIGNAL_ROW_HEIGHT) / (int64_t)(total - 1));
+}
 
 typedef struct {
     int   idx;
@@ -363,7 +406,10 @@ static void refresh_signal_list_view(void)
     if (scroll_y < 0)
         scroll_y = 0;
 
-    first_index = (size_t)scroll_y / SIGNAL_ROW_HEIGHT;
+    {
+        size_t total_for_idx = signal_count_snapshot();
+        first_index = listen_scroll_to_first_index(scroll_y, total_for_idx);
+    }
     copy_signal_window(first_index, window, SIGNAL_ROW_POOL_SIZE, &copied, &total);
 
     update_signal_count_label(total);
@@ -379,7 +425,7 @@ static void refresh_signal_list_view(void)
     }
 
     lv_obj_add_flag(s_empty_lbl, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_height(s_sig_spacer, (lv_coord_t)(total * SIGNAL_ROW_HEIGHT));
+    lv_obj_set_height(s_sig_spacer, listen_virt_content_h(total));
 
     for (int i = 0; i < SIGNAL_ROW_POOL_SIZE; i++) {
         signal_row_view_t *view = &s_row_pool[i];
@@ -395,7 +441,7 @@ static void refresh_signal_list_view(void)
         size_t signal_index = first_index + (size_t)i;
         const subghz_signal_t *sig = &window[i];
 
-        lv_obj_set_pos(view->row, 0, (lv_coord_t)(signal_index * SIGNAL_ROW_HEIGHT));
+        lv_obj_set_pos(view->row, 0, listen_row_y(signal_index, total));
         lv_label_set_text_fmt(view->idx, "%d", sig->idx);
         lv_label_set_text(view->type, sig->type);
         lv_obj_set_style_text_color(view->type,
@@ -722,7 +768,7 @@ static void ui_tick_cb(lv_timer_t *t)
         waterfall_push_activity(activity);
     if (history_dirty && s_follow_latest && s_sig_list) {
         total = signal_count_snapshot();
-        target_y = (lv_coord_t)(total * SIGNAL_ROW_HEIGHT) - lv_obj_get_height(s_sig_list);
+        target_y = listen_virt_content_h(total) - lv_obj_get_height(s_sig_list);
         if (target_y < 0)
             target_y = 0;
         lv_obj_scroll_to_y(s_sig_list, target_y, LV_ANIM_OFF);
@@ -745,7 +791,7 @@ static void on_signal_list_scroll(lv_event_t *e)
     if (scroll_y < 0)
         scroll_y = 0;
 
-    max_scroll = (lv_coord_t)(total * SIGNAL_ROW_HEIGHT) - lv_obj_get_height(s_sig_list);
+    max_scroll = listen_virt_content_h(total) - lv_obj_get_height(s_sig_list);
     if (max_scroll < 0)
         max_scroll = 0;
 
