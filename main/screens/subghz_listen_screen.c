@@ -110,6 +110,8 @@ static volatile bool   s_psram_exhausted;
 static float           s_freq_mhz = 433.92f;
 static portMUX_TYPE    s_signal_lock = portMUX_INITIALIZER_UNLOCKED;
 
+static bool            s_pending_autostart;
+
 static lv_obj_t   *s_canvas;
 static lv_color_t *s_canvas_buf;
 static lv_obj_t   *s_sig_list;
@@ -964,4 +966,16 @@ void show_subghz_listen_screen(void)
     s_ui_timer = lv_timer_create(ui_tick_cb, WATERFALL_TICK_MS, NULL);
 
     ESP_LOGI(TAG, "SubGHz Listen screen ready");
+
+    if (s_pending_autostart) {
+        s_pending_autostart = false;
+        on_start_stop(NULL);
+    }
+}
+
+void show_subghz_listen_screen_at(float mhz, bool autostart)
+{
+    s_freq_mhz = mhz;
+    s_pending_autostart = autostart;
+    show_subghz_listen_screen();
 }
