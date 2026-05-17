@@ -31,10 +31,10 @@ void subghz_rf_settings_defaults(subghz_rf_settings_t *out)
     out->hunter_raw         = false;
     out->hunter_single      = false;
     out->hunter_fast        = false;
-    out->scanner_dwell_ms   = 120;
+    out->scanner_dwell_ms   = 80;
     out->scanner_edges      = 4;
-    out->scanner_rssi_dbm   = -60;
-    out->scanner_fast       = false;
+    out->scanner_rssi_dbm   = -80;
+    out->scanner_fast       = true;
 }
 
 void subghz_rf_settings_clamp(subghz_rf_settings_t *s)

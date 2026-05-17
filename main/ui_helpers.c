@@ -251,16 +251,27 @@ lv_obj_t *ui_create_top_bar(lv_obj_t *parent, const char *title,
     return bar;
 }
 
+void ui_top_bar_pass_through(lv_obj_t *obj)
+{
+    if (!obj) return;
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
 lv_obj_t *ui_add_top_bar_action(lv_obj_t *bar, const char *symbol,
                                 lv_event_cb_t cb, void *user_data)
 {
     lv_obj_t *btn = lv_btn_create(bar);
-    lv_obj_set_size(btn, 28, 28);
+    lv_obj_set_size(btn, 40, 32);
     lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
     lv_obj_set_style_bg_color(btn, ui_card_pressed_color(), LV_STATE_PRESSED);
     lv_obj_set_style_radius(btn, 6, 0);
     lv_obj_set_style_pad_all(btn, 0, 0);
     lv_obj_set_style_margin_left(btn, 4, 0);
+    lv_obj_set_style_margin_right(btn, 2, 0);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    /* Match Back button: large invisible hit target for finger taps. */
+    lv_obj_set_ext_click_area(btn, 36);
     if (cb) {
         lv_obj_set_user_data(btn, user_data);
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
@@ -269,8 +280,10 @@ lv_obj_t *ui_add_top_bar_action(lv_obj_t *bar, const char *symbol,
     lv_obj_t *lbl = lv_label_create(btn);
     lv_label_set_text(lbl, symbol ? symbol : LV_SYMBOL_SETTINGS);
     lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_16, 0);
     lv_obj_center(lbl);
+
+    lv_obj_move_foreground(btn);
     return btn;
 }
 
@@ -702,6 +715,11 @@ void ui_screen_timeout_init(void)
 bool ui_display_lock_wait(void)
 {
     return bsp_display_lock(portMAX_DELAY);
+}
+
+bool ui_display_lock_try(void)
+{
+    return bsp_display_lock(0);
 }
 
 void ui_display_unlock_safe(void)

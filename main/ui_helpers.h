@@ -118,7 +118,13 @@ void show_settings_screen(void);
  */
 bool ui_display_lock_wait(void);
 
+/** Non-blocking; use from LVGL timers so touch input is not delayed. */
+bool ui_display_lock_try(void);
+
 void ui_display_unlock_safe(void);
+
+/** Decorative top-bar child: visible but does not steal touches. */
+void ui_top_bar_pass_through(lv_obj_t *obj);
 
 /**
  * Queue work on the LVGL task from another thread: takes the display mutex,

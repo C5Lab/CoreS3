@@ -668,7 +668,7 @@ static void ui_tick_cb(lv_timer_t *t)
     status_dirty = s_status_dirty;
     s_status_dirty = false;
 
-    if (!ui_display_lock_wait())
+    if (!ui_display_lock_try())
         return;
     if (status_dirty)
         apply_status_to_label();
@@ -711,6 +711,19 @@ static void on_signal_list_scroll(lv_event_t *e)
 static void hunter_build_ui(lv_obj_t *scr)
 {
     lv_obj_t *bar = ui_create_top_bar(scr, "Hunter", on_back, NULL);
+    {
+        lv_obj_t *title = lv_obj_get_child(bar, 1);
+        if (title) {
+            lv_obj_set_flex_grow(title, 0);
+            lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
+        }
+    }
+    lv_obj_t *bar_spacer = lv_obj_create(bar);
+    lv_obj_remove_style_all(bar_spacer);
+    lv_obj_set_flex_grow(bar_spacer, 1);
+    lv_obj_set_height(bar_spacer, 1);
+    ui_top_bar_pass_through(bar_spacer);
+
     ui_add_top_bar_action(bar, LV_SYMBOL_SETTINGS, on_settings, NULL);
 
     /* Animation strip: spinner + status text */

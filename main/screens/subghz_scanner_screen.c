@@ -75,7 +75,7 @@ static void scanner_start_uart(void)
     subghz_rf_settings_load(&cfg);
     subghz_rf_build_scanner_cmd(&cfg, cmd, sizeof(cmd));
     if (cmd[0] == '\0') {
-        strncpy(cmd, "subghz_scanner dwell=120 edges=4 -60", sizeof(cmd) - 1);
+        strncpy(cmd, "subghz_scanner dwell=80 edges=4 -80 fast", sizeof(cmd) - 1);
         cmd[sizeof(cmd) - 1] = '\0';
     }
 
@@ -184,7 +184,7 @@ static void ui_tick_cb(lv_timer_t *t)
     s_pass_pulse = false;
     s_tiles_dirty = false;
 
-    if (!ui_display_lock_wait()) return;
+    if (!ui_display_lock_try()) return;
 
     if (pulse && s_dot) {
         s_dot_bright = !s_dot_bright;
@@ -310,6 +310,7 @@ void show_subghz_scanner_screen(void)
     lv_obj_remove_style_all(spacer);
     lv_obj_set_flex_grow(spacer, 1);
     lv_obj_set_height(spacer, 1);
+    ui_top_bar_pass_through(spacer);
 
     lv_obj_t *scan_lbl = lv_label_create(bar);
     lv_label_set_text(scan_lbl, "Scanning");
@@ -324,6 +325,7 @@ void show_subghz_scanner_screen(void)
     lv_obj_set_style_radius(s_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_margin_left(s_dot, 6, 0);
     lv_obj_set_style_margin_right(s_dot, 4, 0);
+    ui_top_bar_pass_through(s_dot);
 
     ui_add_top_bar_action(bar, LV_SYMBOL_SETTINGS, on_settings, NULL);
 
