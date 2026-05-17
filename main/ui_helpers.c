@@ -251,6 +251,29 @@ lv_obj_t *ui_create_top_bar(lv_obj_t *parent, const char *title,
     return bar;
 }
 
+lv_obj_t *ui_add_top_bar_action(lv_obj_t *bar, const char *symbol,
+                                lv_event_cb_t cb, void *user_data)
+{
+    lv_obj_t *btn = lv_btn_create(bar);
+    lv_obj_set_size(btn, 28, 28);
+    lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
+    lv_obj_set_style_bg_color(btn, ui_card_pressed_color(), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_set_style_pad_all(btn, 0, 0);
+    lv_obj_set_style_margin_left(btn, 4, 0);
+    if (cb) {
+        lv_obj_set_user_data(btn, user_data);
+        lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user_data);
+    }
+
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, symbol ? symbol : LV_SYMBOL_SETTINGS);
+    lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(lbl);
+    return btn;
+}
+
 lv_obj_t *ui_create_tile(lv_obj_t *parent, const char *icon,
                           const char *label_text, lv_color_t accent,
                           lv_event_cb_t on_click, void *user_data)

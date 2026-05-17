@@ -2,5 +2,6 @@
 #define SUBGHZ_HUNTER_SCREEN_H
 
 void show_subghz_hunter_screen(void);
+void show_subghz_hunter_screen_resume(void);
 
 #endif

@@ -1,6 +1,8 @@
 #include "subghz_hunter_screen.h"
+#include "subghz_hunter_settings_screen.h"
 #include "subghz_screen.h"
 #include "subghz_parser.h"
+#include "subghz_rf_settings.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
@@ -134,7 +136,12 @@ static lv_timer_t *s_kb_timer;
 static lv_timer_t *s_ui_timer;
 
 static void on_back(lv_event_t *e);
+static void on_settings(lv_event_t *e);
 static void on_stop(lv_event_t *e);
+static void hunter_delete_timers(void);
+static void hunter_reset_lvgl_pointers(void);
+static void hunter_build_ui(lv_obj_t *scr);
+static void hunter_start_uart(void);
 static void hunter_line_cb(const char *line);
 static void kb_poll_cb(lv_timer_t *t);
 static void ui_tick_cb(lv_timer_t *t);
@@ -579,13 +586,59 @@ static void on_stop(lv_event_t *e)
     stop_hunting();
 }
 
+static void hunter_delete_timers(void)
+{
+    if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
+    if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
+}
+
+static void hunter_reset_lvgl_pointers(void)
+{
+    memset(s_row_pool, 0, sizeof(s_row_pool));
+    s_spinner        = NULL;
+    s_status_lbl     = NULL;
+    s_capt_count_lbl = NULL;
+    s_btn_stop       = NULL;
+    s_sig_list       = NULL;
+    s_sig_spacer     = NULL;
+    s_empty_lbl      = NULL;
+}
+
+static void hunter_start_uart(void)
+{
+    subghz_rf_settings_t cfg;
+    char cmd[96];
+
+    subghz_rf_settings_load(&cfg);
+    subghz_rf_build_hunter_cmd(&cfg, cmd, sizeof(cmd));
+    if (cmd[0] == '\0') {
+        strncpy(cmd, "subghz_freq_analyzer -70 hunt timeout=2000", sizeof(cmd) - 1);
+        cmd[sizeof(cmd) - 1] = '\0';
+    }
+
+    uart_stop_collect();
+    s_running = true;
+    uart_set_line_callback(hunter_line_cb);
+    uart_send_command(cmd);
+    set_status(HUNTER_STATUS_SCAN, "Hunting...");
+    ESP_LOGI(TAG, "Hunter UART: %s", cmd);
+}
+
+static void on_settings(lv_event_t *e)
+{
+    (void)e;
+    stop_hunting();
+    uart_stop_collect();
+    hunter_delete_timers();
+    show_subghz_hunter_settings_screen();
+}
+
 static void on_back(lv_event_t *e)
 {
     (void)e;
     stop_hunting();
     uart_stop_collect();
-    if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
-    if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
+    hunter_delete_timers();
 
     clear_signal_history();
     show_subghz_screen();
@@ -655,34 +708,10 @@ static void on_signal_list_scroll(lv_event_t *e)
     refresh_signal_list_view();
 }
 
-void show_subghz_hunter_screen(void)
+static void hunter_build_ui(lv_obj_t *scr)
 {
-    memset(s_row_pool, 0, sizeof(s_row_pool));
-    s_signal_head      = NULL;
-    s_signal_tail      = NULL;
-    s_last_signal      = NULL;
-    s_signal_count     = 0;
-    s_running          = false;
-    s_follow_latest    = true;
-    s_history_dirty    = true;
-    s_status_dirty     = true;
-    s_psram_exhausted  = false;
-    s_spinner          = NULL;
-    s_status_lbl       = NULL;
-    s_capt_count_lbl   = NULL;
-    s_btn_stop         = NULL;
-    s_sig_list         = NULL;
-    s_sig_spacer       = NULL;
-    s_empty_lbl        = NULL;
-    s_kb_timer         = NULL;
-    s_ui_timer         = NULL;
-
-    s_status_kind = HUNTER_STATUS_SCAN;
-    snprintf(s_status_text, sizeof(s_status_text), "Starting hunter...");
-
-    lv_obj_t *scr = ui_screen_clear();
-
-    ui_create_top_bar(scr, "Hunter", on_back, NULL);
+    lv_obj_t *bar = ui_create_top_bar(scr, "Hunter", on_back, NULL);
+    ui_add_top_bar_action(bar, LV_SYMBOL_SETTINGS, on_settings, NULL);
 
     /* Animation strip: spinner + status text */
     lv_obj_t *anim_row = lv_obj_create(scr);
@@ -797,13 +826,43 @@ void show_subghz_hunter_screen(void)
 
     s_kb_timer = lv_timer_create(kb_poll_cb, 50, NULL);
     s_ui_timer = lv_timer_create(ui_tick_cb, UI_TICK_MS, NULL);
+}
 
-    /* Auto-start hunt */
-    uart_stop_collect();
-    s_running = true;
-    uart_set_line_callback(hunter_line_cb);
-    uart_send_command("subghz_freq_analyzer hunt");
-    set_status(HUNTER_STATUS_SCAN, "Hunting...");
+void show_subghz_hunter_screen(void)
+{
+    clear_signal_history();
+    s_running         = false;
+    s_follow_latest   = true;
+    s_history_dirty   = true;
+    s_status_dirty    = true;
+    s_psram_exhausted = false;
+    hunter_delete_timers();
+    hunter_reset_lvgl_pointers();
+
+    s_status_kind = HUNTER_STATUS_SCAN;
+    snprintf(s_status_text, sizeof(s_status_text), "Starting hunter...");
+
+    lv_obj_t *scr = ui_screen_clear();
+    hunter_build_ui(scr);
+    hunter_start_uart();
 
     ESP_LOGI(TAG, "SubGHz Hunter screen ready");
+}
+
+void show_subghz_hunter_screen_resume(void)
+{
+    s_running         = false;
+    s_history_dirty   = true;
+    s_status_dirty    = true;
+    hunter_delete_timers();
+    hunter_reset_lvgl_pointers();
+
+    s_status_kind = HUNTER_STATUS_SCAN;
+    snprintf(s_status_text, sizeof(s_status_text), "Restarting hunter...");
+
+    lv_obj_t *scr = ui_screen_clear();
+    hunter_build_ui(scr);
+    hunter_start_uart();
+
+    ESP_LOGI(TAG, "SubGHz Hunter resumed (history preserved)");
 }

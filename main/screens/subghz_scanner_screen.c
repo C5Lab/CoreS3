@@ -1,6 +1,8 @@
 #include "subghz_scanner_screen.h"
+#include "subghz_scanner_settings_screen.h"
 #include "subghz_screen.h"
 #include "subghz_listen_screen.h"
+#include "subghz_rf_settings.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
@@ -41,7 +43,10 @@ static lv_timer_t *s_kb_timer;
 static lv_timer_t *s_ui_timer;
 
 static void on_back(lv_event_t *e);
+static void on_settings(lv_event_t *e);
 static void on_tile_clicked(lv_event_t *e);
+static void scanner_delete_timers(void);
+static void scanner_start_uart(void);
 static void scanner_line_cb(const char *line);
 static void kb_poll_cb(lv_timer_t *t);
 static void ui_tick_cb(lv_timer_t *t);
@@ -54,6 +59,31 @@ static void stop_scanner(void)
     s_running = false;
     uart_send_command("subghz_stop");
     uart_set_line_callback(NULL);
+}
+
+static void scanner_delete_timers(void)
+{
+    if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
+    if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
+}
+
+static void scanner_start_uart(void)
+{
+    subghz_rf_settings_t cfg;
+    char cmd[96];
+
+    subghz_rf_settings_load(&cfg);
+    subghz_rf_build_scanner_cmd(&cfg, cmd, sizeof(cmd));
+    if (cmd[0] == '\0') {
+        strncpy(cmd, "subghz_scanner dwell=120 edges=4 -60", sizeof(cmd) - 1);
+        cmd[sizeof(cmd) - 1] = '\0';
+    }
+
+    uart_stop_collect();
+    uart_set_line_callback(scanner_line_cb);
+    s_running = true;
+    uart_send_command(cmd);
+    ESP_LOGI(TAG, "Scanner UART: %s", cmd);
 }
 
 static void mru_insert_freq(float freq)
@@ -181,11 +211,19 @@ static void on_tile_clicked(lv_event_t *e)
     snprintf(cmd, sizeof(cmd), "subghz_freq %.2f", freq);
     uart_send_command(cmd);
 
-    if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
-    if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
+    scanner_delete_timers();
 
     ESP_LOGI(TAG, "Tile clicked: %.2f MHz -> Listen", freq);
     show_subghz_listen_screen_at(freq, true);
+}
+
+static void on_settings(lv_event_t *e)
+{
+    (void)e;
+    stop_scanner();
+    uart_stop_collect();
+    scanner_delete_timers();
+    show_subghz_scanner_settings_screen();
 }
 
 static void on_back(lv_event_t *e)
@@ -193,9 +231,7 @@ static void on_back(lv_event_t *e)
     (void)e;
     stop_scanner();
     uart_stop_collect();
-
-    if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
-    if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
+    scanner_delete_timers();
 
     show_subghz_screen();
 }
@@ -262,6 +298,13 @@ void show_subghz_scanner_screen(void)
     lv_obj_t *scr = ui_screen_clear();
 
     lv_obj_t *bar = ui_create_top_bar(scr, "Scanner", on_back, NULL);
+    {
+        lv_obj_t *title = lv_obj_get_child(bar, 1);
+        if (title) {
+            lv_obj_set_flex_grow(title, 0);
+            lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
+        }
+    }
 
     lv_obj_t *spacer = lv_obj_create(bar);
     lv_obj_remove_style_all(spacer);
@@ -281,6 +324,8 @@ void show_subghz_scanner_screen(void)
     lv_obj_set_style_radius(s_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_margin_left(s_dot, 6, 0);
     lv_obj_set_style_margin_right(s_dot, 4, 0);
+
+    ui_add_top_bar_action(bar, LV_SYMBOL_SETTINGS, on_settings, NULL);
 
     lv_obj_t *grid = lv_obj_create(scr);
     lv_obj_set_size(grid, LV_PCT(100), 240 - 36);
@@ -303,10 +348,7 @@ void show_subghz_scanner_screen(void)
     s_kb_timer = lv_timer_create(kb_poll_cb, 50, NULL);
     s_ui_timer = lv_timer_create(ui_tick_cb, UI_TICK_MS, NULL);
 
-    uart_stop_collect();
-    uart_set_line_callback(scanner_line_cb);
-    s_running = true;
-    uart_send_command("subghz_scanner");
+    scanner_start_uart();
 
     ESP_LOGI(TAG, "SubGHz Scanner screen ready");
 }

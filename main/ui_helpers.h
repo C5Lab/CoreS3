@@ -93,6 +93,8 @@ void style_neutral_button(lv_obj_t *btn);
 lv_obj_t *ui_screen_clear(void);
 lv_obj_t *ui_create_top_bar(lv_obj_t *parent, const char *title,
                             lv_event_cb_t on_back, void *user_data);
+lv_obj_t *ui_add_top_bar_action(lv_obj_t *bar, const char *symbol,
+                                lv_event_cb_t cb, void *user_data);
 lv_obj_t *ui_create_tile(lv_obj_t *parent, const char *icon,
                           const char *label_text, lv_color_t accent,
                           lv_event_cb_t on_click, void *user_data);
