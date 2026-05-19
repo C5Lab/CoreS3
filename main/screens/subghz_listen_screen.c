@@ -1,6 +1,8 @@
 #include "subghz_listen_screen.h"
+#include "subghz_listen_settings_screen.h"
 #include "subghz_screen.h"
 #include "subghz_parser.h"
+#include "subghz_rf_settings.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
@@ -128,6 +130,8 @@ static lv_timer_t *s_kb_timer;
 static lv_timer_t *s_ui_timer;
 
 static void on_back(lv_event_t *e);
+static void on_settings(lv_event_t *e);
+static void listen_teardown(void);
 static void on_start_stop(lv_event_t *e);
 static void on_raw_toggle(lv_event_t *e);
 static void on_freq_tap(lv_event_t *e);
@@ -697,18 +701,22 @@ static void on_start_stop(lv_event_t *e)
     update_start_stop_btn();
     if (s_btn_raw) lv_obj_add_state(s_btn_raw, LV_STATE_DISABLED);
 
-    char cmd[32];
+    char cmd[40];
     snprintf(cmd, sizeof(cmd), "subghz_freq %.2f", s_freq_mhz);
     uart_send_command(cmd);
 
     uart_set_line_callback(subghz_line_cb);
 
+    subghz_rf_settings_t cfg;
+    subghz_rf_settings_load(&cfg);
     if (s_raw_mode)
-        uart_send_command("subghz_rx raw");
+        snprintf(cmd, sizeof(cmd), "subghz_rx raw rssi=%d", (int)cfg.listen_rssi_dbm);
     else
-        uart_send_command("subghz_rx");
+        snprintf(cmd, sizeof(cmd), "subghz_rx rssi=%d", (int)cfg.listen_rssi_dbm);
+    uart_send_command(cmd);
 
-    ESP_LOGI(TAG, "SubGHz listen started (%.2f MHz, raw=%d)", s_freq_mhz, s_raw_mode);
+    ESP_LOGI(TAG, "SubGHz listen started (%.2f MHz, raw=%d, rssi=%d)",
+             s_freq_mhz, s_raw_mode, (int)cfg.listen_rssi_dbm);
 }
 
 static void on_raw_toggle(lv_event_t *e)
@@ -721,9 +729,8 @@ static void on_raw_toggle(lv_event_t *e)
     }
 }
 
-static void on_back(lv_event_t *e)
+static void listen_teardown(void)
 {
-    (void)e;
     stop_listening();
     uart_stop_collect();
     close_freq_popup();
@@ -737,8 +744,20 @@ static void on_back(lv_event_t *e)
         s_canvas_buf = NULL;
     }
     s_canvas = NULL;
+}
 
+static void on_back(lv_event_t *e)
+{
+    (void)e;
+    listen_teardown();
     show_subghz_screen();
+}
+
+static void on_settings(lv_event_t *e)
+{
+    (void)e;
+    listen_teardown();
+    show_subghz_listen_settings_screen();
 }
 
 static void kb_poll_cb(lv_timer_t *t)
@@ -857,6 +876,8 @@ void show_subghz_listen_screen(void)
     lv_obj_set_style_text_color(s_freq_lbl, UI_ACCENT_PINK, 0);
     lv_obj_set_style_text_font(s_freq_lbl, &lv_font_montserrat_12, 0);
     lv_obj_center(s_freq_lbl);
+
+    ui_add_top_bar_action(bar, LV_SYMBOL_SETTINGS, on_settings, NULL);
 
     /* Control bar */
     lv_obj_t *ctrl = lv_obj_create(scr);

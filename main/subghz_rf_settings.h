@@ -15,6 +15,7 @@ typedef struct {
     uint8_t  scanner_edges;
     int8_t   scanner_rssi_dbm;     /* -120..-40 */
     bool     scanner_fast;
+    int8_t   listen_rssi_dbm;      /* -120..-40 */
 } subghz_rf_settings_t;
 
 void subghz_rf_settings_defaults(subghz_rf_settings_t *out);
@@ -40,5 +41,8 @@ uint16_t subghz_rf_scanner_dwell_from_index(int idx);
 
 int  subghz_rf_scanner_edges_index(uint8_t edges);
 uint8_t subghz_rf_scanner_edges_from_index(int idx);
+
+int  subghz_rf_listen_rssi_index(int8_t dbm);
+int8_t subghz_rf_listen_rssi_from_index(int idx);
 
 #endif

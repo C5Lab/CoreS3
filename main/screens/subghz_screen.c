@@ -9,6 +9,7 @@
 #include "subghz_weather_screen.h"
 #include "home_screen.h"
 #include "ui_helpers.h"
+#include "device_info.h"
 #include "esp_log.h"
 
 static const char *TAG = "subghz";
@@ -79,7 +80,7 @@ void show_subghz_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
 
-    ui_create_top_bar(scr, "Sub-GHz", on_back, NULL);
+    ui_create_top_bar(scr, device_info_subghz_title(), on_back, NULL);
 
     lv_obj_t *grid = lv_obj_create(scr);
     lv_obj_set_size(grid, LV_PCT(100), LV_SIZE_CONTENT);

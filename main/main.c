@@ -11,6 +11,7 @@
 #include "led_indicator.h"
 #include "ui_helpers.h"
 #include "home_screen.h"
+#include "device_info.h"
 #include <math.h>
 #include <string.h>
 
@@ -280,6 +281,9 @@ void app_main(void)
 
     /* UART to ESP32C5 */
     uart_handler_init();
+
+    /* Probe firmware for the provisioned board_name (used as SubGHz title). */
+    device_info_init();
 
     /* M5GO Bottom3 LED strip (10x WS2812 on GPIO5) */
     led_indicator_init();

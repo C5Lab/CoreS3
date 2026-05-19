@@ -17,6 +17,7 @@ static const char *TAG = "subghz_rf";
 #define KEY_SC_EDGES     "sc_edges"
 #define KEY_SC_RSSI      "sc_rssi"
 #define KEY_SC_FAST      "sc_fast"
+#define KEY_LS_RSSI      "ls_rssi"
 
 static const int8_t s_trigger_dbm[] = { -85, -80, -75, -70, -65, -60 };
 static const uint16_t s_timeout_ms[] = { 1000, 2000, 3000, 5000 };
@@ -35,6 +36,7 @@ void subghz_rf_settings_defaults(subghz_rf_settings_t *out)
     out->scanner_edges      = 4;
     out->scanner_rssi_dbm   = -80;
     out->scanner_fast       = true;
+    out->listen_rssi_dbm    = -80;
 }
 
 void subghz_rf_settings_clamp(subghz_rf_settings_t *s)
@@ -48,6 +50,8 @@ void subghz_rf_settings_clamp(subghz_rf_settings_t *s)
     if (s->scanner_edges < 1) s->scanner_edges = 1;
     if (s->scanner_rssi_dbm > -40) s->scanner_rssi_dbm = -40;
     if (s->scanner_rssi_dbm < -120) s->scanner_rssi_dbm = -120;
+    if (s->listen_rssi_dbm > -40) s->listen_rssi_dbm = -40;
+    if (s->listen_rssi_dbm < -120) s->listen_rssi_dbm = -120;
 }
 
 void subghz_rf_settings_load(subghz_rf_settings_t *out)
@@ -80,6 +84,8 @@ void subghz_rf_settings_load(subghz_rf_settings_t *out)
         out->scanner_rssi_dbm = i8;
     if (nvs_get_u8(nvs, KEY_SC_FAST, &u8) == ESP_OK)
         out->scanner_fast = (u8 != 0);
+    if (nvs_get_i8(nvs, KEY_LS_RSSI, &i8) == ESP_OK)
+        out->listen_rssi_dbm = i8;
 
     nvs_close(nvs);
     subghz_rf_settings_clamp(out);
@@ -106,6 +112,7 @@ void subghz_rf_settings_save(const subghz_rf_settings_t *s)
     nvs_set_u8(nvs, KEY_SC_EDGES, tmp.scanner_edges);
     nvs_set_i8(nvs, KEY_SC_RSSI, tmp.scanner_rssi_dbm);
     nvs_set_u8(nvs, KEY_SC_FAST, tmp.scanner_fast ? 1 : 0);
+    nvs_set_i8(nvs, KEY_LS_RSSI, tmp.listen_rssi_dbm);
     nvs_commit(nvs);
     nvs_close(nvs);
 }
@@ -201,6 +208,20 @@ uint8_t subghz_rf_scanner_edges_from_index(int idx)
     if (idx < 0) idx = 0;
     if (idx > 3) idx = 3;
     return s_edges[idx];
+}
+
+int subghz_rf_listen_rssi_index(int8_t dbm)
+{
+    int vals[6];
+    for (int i = 0; i < 6; i++) vals[i] = s_scanner_rssi[i];
+    return nearest_index_int(vals, 6, dbm);
+}
+
+int8_t subghz_rf_listen_rssi_from_index(int idx)
+{
+    if (idx < 0) idx = 0;
+    if (idx > 5) idx = 5;
+    return s_scanner_rssi[idx];
 }
 
 void subghz_rf_build_hunter_cmd(const subghz_rf_settings_t *s, char *buf, size_t len)

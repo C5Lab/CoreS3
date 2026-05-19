@@ -9,6 +9,7 @@ idf_component_register(
         "cardkb.c"
         "subghz_parser.c"
         "subghz_rf_settings.c"
+        "device_info.c"
         "led_indicator.c"
         "screens/home_screen.c"
         "screens/wifi_scan_screen.c"
@@ -36,6 +37,7 @@ idf_component_register(
         "screens/subghz_scanner_screen.c"
         "screens/subghz_scanner_settings_screen.c"
         "screens/subghz_hunter_settings_screen.c"
+        "screens/subghz_listen_settings_screen.c"
         "screens/subghz_weather_screen.c"
     INCLUDE_DIRS
         "."
