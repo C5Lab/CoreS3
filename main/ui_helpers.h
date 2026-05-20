@@ -132,4 +132,32 @@ void ui_top_bar_pass_through(lv_obj_t *obj);
  */
 bool ui_lvgl_async_call(lv_async_cb_t cb, void *user_data);
 
+/* ========== CardKB text input popup ========== */
+
+typedef void (*ui_text_input_confirm_cb_t)(const char *text, void *user_data);
+typedef void (*ui_text_input_cancel_cb_t)(void *user_data);
+
+/**
+ * Modal one-line text input popup driven by the CardKB.
+ *
+ * Layout: full-screen overlay + centered card with a title label, a
+ * one-line lv_textarea (prefilled with `initial`), and OK / Cancel
+ * buttons. The popup polls cardkb_read_key() internally:
+ *   - printable ASCII -> lv_textarea_add_char
+ *   - 0x08 / 0x7F     -> lv_textarea_delete_char (backspace)
+ *   - 0x0D / 0x0A     -> confirm (same as OK)
+ *   - 0x1B            -> cancel (same as Cancel)
+ *
+ * Either callback may be NULL. The popup destroys itself in both
+ * outcomes before invoking the callback, so callers can open another
+ * popup from within `on_confirm`.
+ */
+void ui_show_text_input_popup(const char *title,
+                              const char *initial,
+                              uint32_t max_len,
+                              lv_color_t accent,
+                              ui_text_input_confirm_cb_t on_confirm,
+                              ui_text_input_cancel_cb_t on_cancel,
+                              void *user_data);
+
 #endif

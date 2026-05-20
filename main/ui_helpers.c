@@ -1,4 +1,5 @@
 #include "ui_helpers.h"
+#include "cardkb.h"
 #include "home_screen.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -8,6 +9,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define NVS_NAMESPACE       "settings"
 #define NVS_KEY_DARK_MODE   "dark_mode"
@@ -742,4 +745,215 @@ bool ui_lvgl_async_call(lv_async_cb_t cb, void *user_data)
         return false;
     }
     return true;
+}
+
+/* ------------------------------------------------------------------ */
+/*  CardKB text input popup                                            */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    lv_obj_t                  *overlay;
+    lv_obj_t                  *textarea;
+    lv_timer_t                *kb_timer;
+    ui_text_input_confirm_cb_t on_confirm;
+    ui_text_input_cancel_cb_t  on_cancel;
+    void                      *user_data;
+    /* When the popup opens with a non-empty `initial`, the contents are
+     * shown in the accent color as if "selected". The next key the user
+     * presses clears the textarea before being applied — printable keys
+     * thus replace the old text and a single backspace wipes the field. */
+    bool                       preselect_pending;
+} ui_text_input_ctx_t;
+
+static void text_input_close(ui_text_input_ctx_t *ctx)
+{
+    if (!ctx) return;
+    if (ctx->kb_timer) {
+        lv_timer_delete(ctx->kb_timer);
+        ctx->kb_timer = NULL;
+    }
+    if (ctx->overlay) {
+        lv_obj_delete(ctx->overlay);
+        ctx->overlay = NULL;
+    }
+    free(ctx);
+}
+
+static void text_input_confirm(ui_text_input_ctx_t *ctx)
+{
+    char buf[256];
+    buf[0] = '\0';
+    if (ctx->textarea) {
+        const char *text = lv_textarea_get_text(ctx->textarea);
+        if (text) {
+            strncpy(buf, text, sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+        }
+    }
+    ui_text_input_confirm_cb_t cb = ctx->on_confirm;
+    void *user_data = ctx->user_data;
+    text_input_close(ctx);
+    if (cb) cb(buf, user_data);
+}
+
+static void text_input_cancel(ui_text_input_ctx_t *ctx)
+{
+    ui_text_input_cancel_cb_t cb = ctx->on_cancel;
+    void *user_data = ctx->user_data;
+    text_input_close(ctx);
+    if (cb) cb(user_data);
+}
+
+static void on_text_input_ok(lv_event_t *e)
+{
+    ui_text_input_ctx_t *ctx = lv_event_get_user_data(e);
+    text_input_confirm(ctx);
+}
+
+static void on_text_input_cancel(lv_event_t *e)
+{
+    ui_text_input_ctx_t *ctx = lv_event_get_user_data(e);
+    text_input_cancel(ctx);
+}
+
+static void text_input_consume_preselect(ui_text_input_ctx_t *ctx)
+{
+    if (!ctx || !ctx->preselect_pending) return;
+    ctx->preselect_pending = false;
+    if (ctx->textarea) {
+        lv_textarea_set_text(ctx->textarea, "");
+        lv_obj_set_style_text_color(ctx->textarea, ui_text_color(), 0);
+    }
+}
+
+static void text_input_kb_poll(lv_timer_t *t)
+{
+    ui_text_input_ctx_t *ctx = lv_timer_get_user_data(t);
+    if (!ctx || !ctx->textarea) return;
+
+    uint8_t key = cardkb_read_key();
+    if (key == 0) return;
+
+    if (key == 0x0D || key == 0x0A) {
+        text_input_confirm(ctx);
+        return;
+    }
+    if (key == 0x1B) {
+        text_input_cancel(ctx);
+        return;
+    }
+    if (key == 0x08 || key == 0x7F) {
+        if (ctx->preselect_pending) {
+            /* "Select-all + backspace": clear the whole prefilled value
+             * in one keypress instead of deleting char-by-char. */
+            text_input_consume_preselect(ctx);
+            return;
+        }
+        lv_textarea_delete_char(ctx->textarea);
+        return;
+    }
+    if (key >= 0x20 && key < 0x7F) {
+        text_input_consume_preselect(ctx);
+        lv_textarea_add_char(ctx->textarea, key);
+    }
+}
+
+void ui_show_text_input_popup(const char *title,
+                              const char *initial,
+                              uint32_t max_len,
+                              lv_color_t accent,
+                              ui_text_input_confirm_cb_t on_confirm,
+                              ui_text_input_cancel_cb_t on_cancel,
+                              void *user_data)
+{
+    ui_text_input_ctx_t *ctx = calloc(1, sizeof(*ctx));
+    if (!ctx) {
+        ESP_LOGE(TAG, "text input popup: alloc failed");
+        if (on_cancel) on_cancel(user_data);
+        return;
+    }
+    ctx->on_confirm = on_confirm;
+    ctx->on_cancel  = on_cancel;
+    ctx->user_data  = user_data;
+
+    /* Full-screen modal overlay shielding the screen behind. */
+    ctx->overlay = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(ctx->overlay);
+    lv_obj_set_size(ctx->overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(ctx->overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(ctx->overlay, LV_OPA_50, 0);
+    lv_obj_clear_flag(ctx->overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(ctx->overlay, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Centered card. */
+    lv_obj_t *card = lv_obj_create(ctx->overlay);
+    lv_obj_set_size(card, 300, 150);
+    lv_obj_center(card);
+    style_popup_card(card, 10, accent);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_set_style_pad_gap(card, 8, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title_lbl = lv_label_create(card);
+    lv_label_set_text(title_lbl, title ? title : "Enter text");
+    lv_obj_set_style_text_color(title_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(title_lbl, &lv_font_montserrat_14, 0);
+
+    ctx->textarea = lv_textarea_create(card);
+    lv_obj_set_size(ctx->textarea, 260, 36);
+    lv_textarea_set_one_line(ctx->textarea, true);
+    if (max_len > 0) {
+        lv_textarea_set_max_length(ctx->textarea, max_len);
+    }
+    if (initial && initial[0]) {
+        lv_textarea_set_text(ctx->textarea, initial);
+        ctx->preselect_pending = true;
+    }
+    lv_obj_set_style_text_font(ctx->textarea, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_bg_color(ctx->textarea, ui_card_color(), 0);
+    /* When `preselect_pending`, render the prefilled text in the accent
+     * color so the user sees it as "selected" (analogous to a desktop
+     * select-all on focus). text_input_consume_preselect() restores the
+     * normal text color on the first keypress. */
+    lv_obj_set_style_text_color(ctx->textarea,
+                                ctx->preselect_pending ? accent : ui_text_color(),
+                                0);
+    lv_obj_set_style_border_color(ctx->textarea, accent, LV_STATE_FOCUSED);
+
+    lv_obj_t *btn_row = lv_obj_create(card);
+    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *cancel_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(cancel_btn, 100, 30);
+    lv_obj_set_style_bg_color(cancel_btn, ui_muted_color(), 0);
+    lv_obj_set_style_radius(cancel_btn, 6, 0);
+    lv_obj_add_event_cb(cancel_btn, on_text_input_cancel, LV_EVENT_CLICKED, ctx);
+    lv_obj_t *cl = lv_label_create(cancel_btn);
+    lv_label_set_text(cl, "Cancel");
+    lv_obj_set_style_text_color(cl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(cl, &lv_font_montserrat_12, 0);
+    lv_obj_center(cl);
+
+    lv_obj_t *ok_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(ok_btn, 100, 30);
+    lv_obj_set_style_bg_color(ok_btn, accent, 0);
+    lv_obj_set_style_radius(ok_btn, 6, 0);
+    lv_obj_add_event_cb(ok_btn, on_text_input_ok, LV_EVENT_CLICKED, ctx);
+    lv_obj_t *ol = lv_label_create(ok_btn);
+    lv_label_set_text(ol, "OK");
+    lv_obj_set_style_text_color(ol, lv_color_white(), 0);
+    lv_obj_set_style_text_font(ol, &lv_font_montserrat_12, 0);
+    lv_obj_center(ol);
+
+    ctx->kb_timer = lv_timer_create(text_input_kb_poll, 50, ctx);
 }
