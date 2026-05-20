@@ -165,6 +165,11 @@ static void detection_complete_cb(lv_timer_t *timer)
         splash_timer = NULL;
     }
 
+    /* Probe firmware for board_name now that ESP32C5 has had ~3 s to boot
+     * and the boot melody is essentially finished. Splash is still visible
+     * during the up-to-500ms blocking wait, so there is no visible black gap. */
+    device_info_init();
+
     if (splash_screen) {
         lv_obj_del(splash_screen);
         splash_screen = NULL;
@@ -281,9 +286,6 @@ void app_main(void)
 
     /* UART to ESP32C5 */
     uart_handler_init();
-
-    /* Probe firmware for the provisioned board_name (used as SubGHz title). */
-    device_info_init();
 
     /* M5GO Bottom3 LED strip (10x WS2812 on GPIO5) */
     led_indicator_init();
