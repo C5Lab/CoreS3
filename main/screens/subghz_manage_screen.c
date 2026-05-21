@@ -4,6 +4,7 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
+#include "led_indicator.h"
 #include "psram_dynarr.h"
 #include "esp_log.h"
 #include <ctype.h>
@@ -61,6 +62,7 @@ static void close_action_popup(void);
 static void on_action_rename(lv_event_t *e);
 static void on_action_save(lv_event_t *e);
 static void on_action_delete(lv_event_t *e);
+static void on_action_transmit(lv_event_t *e);
 static void on_action_cancel(lv_event_t *e);
 static void show_delete_confirm_popup(int idx);
 static void on_delete_confirmed(lv_event_t *e);
@@ -536,6 +538,25 @@ static void on_action_delete(lv_event_t *e)
     if (idx > 0) show_delete_confirm_popup(idx);
 }
 
+static void on_action_transmit(lv_event_t *e)
+{
+    (void)e;
+    int idx = s_action_target_idx;
+    close_action_popup();
+    if (idx <= 0) return;
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "subghz_tx %d", idx);
+    uart_send_command(cmd);
+    led_indicator_tx_pulse(1500);
+
+    if (s_status_lbl) {
+        lv_label_set_text_fmt(s_status_lbl, "Transmitted #%d", idx);
+        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_GREEN, 0);
+    }
+    ESP_LOGI(TAG, "Transmit idx=%d", idx);
+}
+
 static void on_action_cancel(lv_event_t *e)
 {
     (void)e;
@@ -551,7 +572,7 @@ static void show_action_popup(int idx)
     s_action_target_idx = idx;
 
     s_action_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_action_popup, 290, 180);
+    lv_obj_set_size(s_action_popup, 310, 190);
     lv_obj_center(s_action_popup);
     style_popup_card(s_action_popup, 10, UI_ACCENT_BLUE);
     lv_obj_set_flex_flow(s_action_popup, LV_FLEX_FLOW_COLUMN);
@@ -571,7 +592,7 @@ static void show_action_popup(int idx)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
 
     lv_obj_t *name_lbl = lv_label_create(s_action_popup);
-    lv_obj_set_width(name_lbl, 270);
+    lv_obj_set_width(name_lbl, 290);
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
     lv_label_set_text_fmt(name_lbl, "name: %s",
                           (sig && sig->name[0]) ? sig->name : "(unset)");
@@ -584,7 +605,7 @@ static void show_action_popup(int idx)
     lv_obj_set_style_bg_opa(brow, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(brow, 0, 0);
     lv_obj_set_style_pad_all(brow, 0, 0);
-    lv_obj_set_style_pad_gap(brow, 6, 0);
+    lv_obj_set_style_pad_gap(brow, 4, 0);
     lv_obj_set_flex_flow(brow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(brow, LV_FLEX_ALIGN_SPACE_EVENLY,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -595,14 +616,15 @@ static void show_action_popup(int idx)
         lv_color_t     bg;
         lv_event_cb_t  cb;
     } btns[] = {
-        { "Rename", UI_ACCENT_BLUE,  on_action_rename },
-        { "Save",   UI_ACCENT_GREEN, on_action_save   },
-        { "Delete", UI_ACCENT_RED,   on_action_delete },
-        { "Cancel", ui_muted_color(), on_action_cancel },
+        { "Rename",   UI_ACCENT_BLUE,   on_action_rename   },
+        { "Save",     UI_ACCENT_GREEN,  on_action_save     },
+        { "Delete",   UI_ACCENT_RED,    on_action_delete   },
+        { "Transmit", UI_ACCENT_ORANGE, on_action_transmit },
+        { "Cancel",   ui_muted_color(), on_action_cancel   },
     };
     for (int i = 0; i < (int)(sizeof(btns) / sizeof(btns[0])); i++) {
         lv_obj_t *b = lv_btn_create(brow);
-        lv_obj_set_size(b, 62, 30);
+        lv_obj_set_size(b, 54, 30);
         lv_obj_set_style_bg_color(b, btns[i].bg, 0);
         lv_obj_set_style_radius(b, 6, 0);
         lv_obj_add_event_cb(b, btns[i].cb, LV_EVENT_CLICKED, NULL);

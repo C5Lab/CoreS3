@@ -26,6 +26,7 @@ typedef struct {
     int   btn;
     int   cnt;
     char  mf[32];
+    char  name[64];
 } tx_signal_t;
 
 typedef struct {
@@ -69,6 +70,7 @@ static void fill_signal(tx_signal_t *dst, const subghz_signal_info_t *src)
     snprintf(dst->type, sizeof(dst->type), "%s", src->type[0] ? src->type : "--");
     snprintf(dst->serial, sizeof(dst->serial), "%s", src->serial[0] ? src->serial : "--");
     snprintf(dst->mf, sizeof(dst->mf), "%s", src->mf[0] ? src->mf : "--");
+    snprintf(dst->name, sizeof(dst->name), "%s", src->name);
 }
 
 static void on_list_received(const char **lines, int count)
@@ -211,7 +213,12 @@ static void refresh_tx_list_view(void)
         lv_label_set_text(view->type, sig->type);
         lv_label_set_text_fmt(view->freq, "%d.%02d",
                               (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100);
-        lv_label_set_text(view->info, sig->mf[0] && strcmp(sig->mf, "--") != 0 ? sig->mf : sig->serial);
+        /* Prefer the editable `name` (firmware emits it in [SUBGHZ_LIST]),
+         * fall back to mf or serial for older firmware. */
+        const char *info_text = sig->name[0]
+            ? sig->name
+            : (sig->mf[0] && strcmp(sig->mf, "--") != 0 ? sig->mf : sig->serial);
+        lv_label_set_text(view->info, info_text);
         view->sig_idx = sig->idx;
         lv_obj_clear_flag(view->row, LV_OBJ_FLAG_HIDDEN);
     }
@@ -276,7 +283,7 @@ static void on_signal_tap(lv_event_t *e)
     tx_signal_t *sig = find_sig_by_idx(idx);
 
     s_tx_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_tx_popup, 280, 180);
+    lv_obj_set_size(s_tx_popup, 280, 200);
     lv_obj_center(s_tx_popup);
     style_popup_card(s_tx_popup, 10, UI_ACCENT_GREEN);
     lv_obj_set_flex_flow(s_tx_popup, LV_FLEX_FLOW_COLUMN);
@@ -288,9 +295,10 @@ static void on_signal_tap(lv_event_t *e)
 
     lv_obj_t *info = lv_label_create(s_tx_popup);
     if (sig)
-        lv_label_set_text_fmt(info, "#%d  %s  %d.%02d MHz\n%s  %s",
+        lv_label_set_text_fmt(info, "#%d  %s  %d.%02d MHz\nname: %s\n%s  %s",
                               sig->idx, sig->type,
                               (int)sig->freq, ((int)(sig->freq * 100.0f + 0.5f)) % 100,
+                              sig->name[0] ? sig->name : "(unset)",
                               sig->mf[0] ? sig->mf : "--", sig->serial);
     else
         lv_label_set_text_fmt(info, "Signal #%d", idx);
