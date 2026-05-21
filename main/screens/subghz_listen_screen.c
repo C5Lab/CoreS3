@@ -126,13 +126,13 @@ static lv_obj_t   *s_btn_start_stop;
 static lv_obj_t   *s_btn_raw;
 static lv_obj_t   *s_freq_popup;
 static lv_obj_t   *s_action_popup;
+static lv_obj_t   *s_leave_popup;
 static lv_obj_t   *s_rollers[5];
 static signal_row_view_t s_row_pool[SIGNAL_ROW_POOL_SIZE];
 static lv_timer_t *s_kb_timer;
 static lv_timer_t *s_ui_timer;
 static lv_timer_t *s_status_clear_timer;
 static int         s_pending_action_idx;
-static bool        s_text_input_open;
 
 /* Status messages may be produced from the UART task (handle_event_line)
  * or the LVGL task (button handlers). To keep LVGL access on the LVGL
@@ -146,6 +146,7 @@ static portMUX_TYPE    s_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static void on_back(lv_event_t *e);
 static void on_settings(lv_event_t *e);
 static void listen_teardown(void);
+static void perform_back(void);
 static void on_start_stop(lv_event_t *e);
 static void on_raw_toggle(lv_event_t *e);
 static void on_freq_tap(lv_event_t *e);
@@ -160,16 +161,14 @@ static void fill_signal(subghz_signal_t *dst, const subghz_signal_info_t *src);
 static bool merge_duplicate_signal(const subghz_signal_info_t *src);
 static void on_signal_row_clicked(lv_event_t *e);
 static void close_action_popup(void);
+static void close_leave_popup(void);
 static void show_action_popup(const subghz_signal_t *sig);
+static void show_leave_popup(size_t count);
 static void set_status_message(const char *msg, lv_color_t color);
 static void apply_pending_status(void);
 static bool find_signal_by_idx(int idx, subghz_signal_t *out);
-static void update_signal_name_by_idx(int idx, const char *new_name);
-static bool is_valid_rename_char(char c);
-static void on_rename_confirm(const char *text, void *user_data);
-static void on_rename_cancel(void *user_data);
-static void on_rename_action(lv_event_t *e);
 static void on_save_action(lv_event_t *e);
+static void on_transmit_action(lv_event_t *e);
 static void on_action_cancel(lv_event_t *e);
 
 static size_t signal_count_snapshot(void)
@@ -521,55 +520,11 @@ static void handle_event_line(const char *line)
 {
     if (!line) return;
 
-    /* Rename + export responses are short single-line events; handle them
+    /* Save + tx responses are short single-line events; handle them
      * regardless of s_running so the UI updates correctly when the user
-     * triggers rename/save after stopping listen but before leaving the
+     * triggers an action after stopping listen but before leaving the
      * screen. */
-    if (strstr(line, "[SUBGHZ_RENAME] ")) {
-        int idx = 0;
-        char new_name[64] = {0};
-        const char *p = strstr(line, "idx=");
-        if (p) idx = atoi(p + 4);
-        p = strstr(line, "new=");
-        if (p) {
-            p += 4;
-            const char *end = strchr(p, ' ');
-            size_t len = end ? (size_t)(end - p) : strlen(p);
-            if (len >= sizeof(new_name)) len = sizeof(new_name) - 1;
-            memcpy(new_name, p, len);
-            new_name[len] = '\0';
-        }
-        if (idx > 0 && new_name[0]) {
-            update_signal_name_by_idx(idx, new_name);
-            char msg[96];
-            snprintf(msg, sizeof(msg), "#%d renamed to %s", idx, new_name);
-            set_status_message(msg, UI_ACCENT_GREEN);
-        }
-        return;
-    }
-
-    if (strstr(line, "[SUBGHZ_RENAME_ERR] ")) {
-        int idx = 0;
-        char reason[32] = {0};
-        const char *p = strstr(line, "idx=");
-        if (p) idx = atoi(p + 4);
-        p = strstr(line, "reason=");
-        if (p) {
-            p += 7;
-            const char *end = strchr(p, ' ');
-            size_t len = end ? (size_t)(end - p) : strlen(p);
-            if (len >= sizeof(reason)) len = sizeof(reason) - 1;
-            memcpy(reason, p, len);
-            reason[len] = '\0';
-        }
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Rename #%d failed: %s", idx,
-                 reason[0] ? reason : "error");
-        set_status_message(msg, UI_ACCENT_RED);
-        return;
-    }
-
-    if (strstr(line, "[SUBGHZ_EXPORT] ")) {
+    if (strstr(line, "[SUBGHZ_SAVE] ")) {
         int idx = 0;
         char name[64] = {0};
         const char *p = strstr(line, "idx=");
@@ -585,9 +540,43 @@ static void handle_event_line(const char *line)
         }
         char msg[96];
         if (name[0])
-            snprintf(msg, sizeof(msg), "#%d saved as %s", idx, name);
+            snprintf(msg, sizeof(msg), "#%d saved to SD: %s", idx, name);
         else
-            snprintf(msg, sizeof(msg), "#%d saved to favorites", idx);
+            snprintf(msg, sizeof(msg), "#%d saved to SD", idx);
+        set_status_message(msg, UI_ACCENT_GREEN);
+        return;
+    }
+
+    if (strstr(line, "[SUBGHZ_SAVE_ERR] ")) {
+        int idx = 0;
+        char reason[32] = {0};
+        const char *p = strstr(line, "idx=");
+        if (p) idx = atoi(p + 4);
+        p = strstr(line, "reason=");
+        if (p) {
+            p += 7;
+            const char *end = strchr(p, ' ');
+            size_t len = end ? (size_t)(end - p) : strlen(p);
+            if (len >= sizeof(reason)) len = sizeof(reason) - 1;
+            memcpy(reason, p, len);
+            reason[len] = '\0';
+        }
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Save #%d failed: %s", idx,
+                 reason[0] ? reason : "error");
+        set_status_message(msg, UI_ACCENT_RED);
+        return;
+    }
+
+    if (strstr(line, "[SUBGHZ_TX] ")) {
+        int idx = 0;
+        const char *p = strstr(line, "idx=");
+        if (p) idx = atoi(p + 4);
+        char msg[96];
+        if (idx > 0)
+            snprintf(msg, sizeof(msg), "Transmitted #%d", idx);
+        else
+            snprintf(msg, sizeof(msg), "Transmitted");
         set_status_message(msg, UI_ACCENT_GREEN);
         return;
     }
@@ -852,6 +841,7 @@ static void listen_teardown(void)
     uart_set_line_callback(NULL);
     close_freq_popup();
     close_action_popup();
+    close_leave_popup();
     if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
     if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
     if (s_status_clear_timer) {
@@ -871,11 +861,25 @@ static void listen_teardown(void)
     s_canvas = NULL;
 }
 
+static void perform_back(void)
+{
+    listen_teardown();
+    show_subghz_screen();
+}
+
 static void on_back(lv_event_t *e)
 {
     (void)e;
-    listen_teardown();
-    show_subghz_screen();
+
+    if (s_leave_popup) return;
+
+    size_t total = signal_count_snapshot();
+    if (total > 0) {
+        show_leave_popup(total);
+        return;
+    }
+
+    perform_back();
 }
 
 static void on_settings(lv_event_t *e)
@@ -888,12 +892,12 @@ static void on_settings(lv_event_t *e)
 static void kb_poll_cb(lv_timer_t *t)
 {
     (void)t;
-    /* Defer to any active popup: text input + freq + action popups own the
-     * CardKB while open so ESC doesn't accidentally trigger Back. */
-    if (s_text_input_open || s_freq_popup || s_action_popup) return;
+    /* Defer to any active popup so ESC dismisses them instead of leaving. */
+    if (s_freq_popup || s_action_popup) return;
     uint8_t key = cardkb_read_key();
     if (key == 0) return;
     if (key == 0x1B || key == 0x08 || key == 0x7F) {
+        if (s_leave_popup) { close_leave_popup(); return; }
         on_back(NULL);
     }
 }
@@ -928,14 +932,6 @@ static void ui_tick_cb(lv_timer_t *t)
     bsp_display_unlock();
 }
 
-static bool is_valid_rename_char(char c)
-{
-    if (c >= 'A' && c <= 'Z') return true;
-    if (c >= 'a' && c <= 'z') return true;
-    if (c >= '0' && c <= '9') return true;
-    return c == '_' || c == '-' || c == '.';
-}
-
 static bool find_signal_by_idx(int idx, subghz_signal_t *out)
 {
     bool found = false;
@@ -956,27 +952,6 @@ static bool find_signal_by_idx(int idx, subghz_signal_t *out)
     portEXIT_CRITICAL(&s_signal_lock);
 
     return found;
-}
-
-static void update_signal_name_by_idx(int idx, const char *new_name)
-{
-    if (idx <= 0 || !new_name) return;
-
-    bool changed = false;
-    portENTER_CRITICAL(&s_signal_lock);
-    for (subghz_signal_chunk_t *chunk = s_signal_head; chunk; chunk = chunk->next) {
-        for (size_t i = 0; i < chunk->used; i++) {
-            if (chunk->items[i].idx == idx) {
-                snprintf(chunk->items[i].name, sizeof(chunk->items[i].name),
-                         "%s", new_name);
-                changed = true;
-            }
-        }
-    }
-    portEXIT_CRITICAL(&s_signal_lock);
-
-    if (changed)
-        s_history_dirty = true;
 }
 
 static void status_clear_timer_cb(lv_timer_t *t)
@@ -1029,67 +1004,12 @@ static void close_action_popup(void)
     }
 }
 
-static void on_rename_confirm(const char *text, void *user_data)
+static void close_leave_popup(void)
 {
-    s_text_input_open = false;
-    int idx = (int)(intptr_t)user_data;
-    if (idx <= 0 || !text) return;
-
-    /* Validate the proposed name client-side so we don't even ask the
-     * firmware. Allowed: 1..63 chars from [A-Za-z0-9_.-] per spec. */
-    size_t len = strlen(text);
-    if (len == 0) {
-        set_status_message("Rename: empty name", UI_ACCENT_RED);
-        return;
+    if (s_leave_popup) {
+        lv_obj_delete(s_leave_popup);
+        s_leave_popup = NULL;
     }
-    if (len > 63) {
-        set_status_message("Rename: name too long", UI_ACCENT_RED);
-        return;
-    }
-    for (size_t i = 0; i < len; i++) {
-        if (!is_valid_rename_char(text[i])) {
-            set_status_message("Rename: invalid characters", UI_ACCENT_RED);
-            return;
-        }
-    }
-
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd), "subghz_rename %d %s", idx, text);
-    uart_send_command(cmd);
-
-    char msg[64];
-    snprintf(msg, sizeof(msg), "Rename #%d sent...", idx);
-    set_status_message(msg, UI_ACCENT_BLUE);
-}
-
-static void on_rename_cancel(void *user_data)
-{
-    (void)user_data;
-    s_text_input_open = false;
-}
-
-static void on_rename_action(lv_event_t *e)
-{
-    (void)e;
-    int idx = s_pending_action_idx;
-    if (idx <= 0) {
-        close_action_popup();
-        return;
-    }
-
-    subghz_signal_t snap;
-    bool have_snap = find_signal_by_idx(idx, &snap);
-
-    close_action_popup();
-
-    s_text_input_open = true;
-    ui_show_text_input_popup("Rename signal",
-                             have_snap ? snap.name : "",
-                             63,
-                             UI_ACCENT_CYAN,
-                             on_rename_confirm,
-                             on_rename_cancel,
-                             (void *)(intptr_t)idx);
 }
 
 static void on_save_action(lv_event_t *e)
@@ -1100,11 +1020,28 @@ static void on_save_action(lv_event_t *e)
     if (idx <= 0) return;
 
     char cmd[32];
-    snprintf(cmd, sizeof(cmd), "subghz_export %d", idx);
+    snprintf(cmd, sizeof(cmd), "subghz_save %d", idx);
     uart_send_command(cmd);
 
     char msg[64];
-    snprintf(msg, sizeof(msg), "Saving #%d to favorites...", idx);
+    snprintf(msg, sizeof(msg), "Saving #%d to SD...", idx);
+    set_status_message(msg, UI_ACCENT_BLUE);
+}
+
+static void on_transmit_action(lv_event_t *e)
+{
+    (void)e;
+    int idx = s_pending_action_idx;
+    close_action_popup();
+    if (idx <= 0) return;
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "subghz_tx %d mem", idx);
+    uart_send_command(cmd);
+    led_indicator_tx_pulse(1500);
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Transmitting #%d...", idx);
     set_status_message(msg, UI_ACCENT_BLUE);
 }
 
@@ -1122,7 +1059,7 @@ static void show_action_popup(const subghz_signal_t *sig)
     s_pending_action_idx = sig->idx;
 
     s_action_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_action_popup, 280, 170);
+    lv_obj_set_size(s_action_popup, 290, 170);
     lv_obj_center(s_action_popup);
     style_popup_card(s_action_popup, 10, UI_ACCENT_CYAN);
     lv_obj_set_flex_flow(s_action_popup, LV_FLEX_FLOW_COLUMN);
@@ -1139,7 +1076,7 @@ static void show_action_popup(const subghz_signal_t *sig)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
 
     lv_obj_t *name_lbl = lv_label_create(s_action_popup);
-    lv_obj_set_width(name_lbl, 260);
+    lv_obj_set_width(name_lbl, 270);
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
     lv_label_set_text_fmt(name_lbl, "name: %s",
                           sig->name[0] ? sig->name : "(unset)");
@@ -1158,38 +1095,105 @@ static void show_action_popup(const subghz_signal_t *sig)
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *rename_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(rename_btn, 80, 30);
-    lv_obj_set_style_bg_color(rename_btn, UI_ACCENT_CYAN, 0);
-    lv_obj_set_style_radius(rename_btn, 6, 0);
-    lv_obj_add_event_cb(rename_btn, on_rename_action, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *rl = lv_label_create(rename_btn);
-    lv_label_set_text(rl, "Rename");
-    lv_obj_set_style_text_color(rl, lv_color_white(), 0);
-    lv_obj_set_style_text_font(rl, &lv_font_montserrat_12, 0);
-    lv_obj_center(rl);
+    struct {
+        const char    *label;
+        lv_color_t     bg;
+        lv_event_cb_t  cb;
+    } btns[] = {
+        { "Save to SD", UI_ACCENT_GREEN,  on_save_action     },
+        { "Transmit",   UI_ACCENT_ORANGE, on_transmit_action },
+        { "Cancel",     ui_muted_color(), on_action_cancel   },
+    };
+    for (int i = 0; i < (int)(sizeof(btns) / sizeof(btns[0])); i++) {
+        lv_obj_t *b = lv_btn_create(btn_row);
+        lv_obj_set_size(b, 82, 32);
+        lv_obj_set_style_bg_color(b, btns[i].bg, 0);
+        lv_obj_set_style_radius(b, 6, 0);
+        lv_obj_add_event_cb(b, btns[i].cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, btns[i].label);
+        lv_obj_set_style_text_color(l, lv_color_white(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_center(l);
+    }
+}
 
-    lv_obj_t *save_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(save_btn, 80, 30);
-    lv_obj_set_style_bg_color(save_btn, UI_ACCENT_GREEN, 0);
-    lv_obj_set_style_radius(save_btn, 6, 0);
-    lv_obj_add_event_cb(save_btn, on_save_action, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *sl = lv_label_create(save_btn);
-    lv_label_set_text(sl, "Save");
+static void on_leave_confirm(lv_event_t *e)
+{
+    (void)e;
+    close_leave_popup();
+    perform_back();
+}
+
+static void on_leave_cancel(lv_event_t *e)
+{
+    (void)e;
+    close_leave_popup();
+}
+
+static void show_leave_popup(size_t count)
+{
+    close_leave_popup();
+
+    s_leave_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_leave_popup, 290, 170);
+    lv_obj_center(s_leave_popup);
+    style_popup_card(s_leave_popup, 10, UI_ACCENT_RED);
+    lv_obj_set_flex_flow(s_leave_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_leave_popup, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(s_leave_popup, 10, 0);
+    lv_obj_set_style_pad_gap(s_leave_popup, 8, 0);
+    lv_obj_clear_flag(s_leave_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_leave_popup);
+    lv_label_set_text(title, "Leave Listen?");
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *body = lv_label_create(s_leave_popup);
+    lv_obj_set_width(body, 270);
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_label_set_text_fmt(body,
+        "%lu unsaved capture%s will be cleared from this view. "
+        "Save them to SD first?",
+        (unsigned long)count, count == 1 ? "" : "s");
+    lv_obj_set_style_text_color(body, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(body, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t *btn_row = lv_obj_create(s_leave_popup);
+    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_style_pad_gap(btn_row, 6, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *leave_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(leave_btn, 110, 32);
+    lv_obj_set_style_bg_color(leave_btn, UI_ACCENT_RED, 0);
+    lv_obj_set_style_radius(leave_btn, 6, 0);
+    lv_obj_add_event_cb(leave_btn, on_leave_confirm, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ll = lv_label_create(leave_btn);
+    lv_label_set_text(ll, "Leave");
+    lv_obj_set_style_text_color(ll, lv_color_white(), 0);
+    lv_obj_set_style_text_font(ll, &lv_font_montserrat_12, 0);
+    lv_obj_center(ll);
+
+    lv_obj_t *stay_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(stay_btn, 110, 32);
+    lv_obj_set_style_bg_color(stay_btn, ui_muted_color(), 0);
+    lv_obj_set_style_radius(stay_btn, 6, 0);
+    lv_obj_add_event_cb(stay_btn, on_leave_cancel, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sl = lv_label_create(stay_btn);
+    lv_label_set_text(sl, "Stay");
     lv_obj_set_style_text_color(sl, lv_color_white(), 0);
     lv_obj_set_style_text_font(sl, &lv_font_montserrat_12, 0);
     lv_obj_center(sl);
-
-    lv_obj_t *cancel_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(cancel_btn, 80, 30);
-    lv_obj_set_style_bg_color(cancel_btn, ui_muted_color(), 0);
-    lv_obj_set_style_radius(cancel_btn, 6, 0);
-    lv_obj_add_event_cb(cancel_btn, on_action_cancel, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *cl = lv_label_create(cancel_btn);
-    lv_label_set_text(cl, "Cancel");
-    lv_obj_set_style_text_color(cl, lv_color_white(), 0);
-    lv_obj_set_style_text_font(cl, &lv_font_montserrat_12, 0);
-    lv_obj_center(cl);
 }
 
 static void on_signal_row_clicked(lv_event_t *e)
@@ -1249,13 +1253,13 @@ void show_subghz_listen_screen(void)
     s_btn_raw      = NULL;
     s_freq_popup   = NULL;
     s_action_popup = NULL;
+    s_leave_popup  = NULL;
     s_kb_timer     = NULL;
     s_ui_timer     = NULL;
     s_status_clear_timer = NULL;
     s_canvas       = NULL;
     s_canvas_buf   = NULL;
     s_pending_action_idx = 0;
-    s_text_input_open = false;
 
     lv_obj_t *scr = ui_screen_clear();
 

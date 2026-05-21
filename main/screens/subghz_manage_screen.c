@@ -49,7 +49,6 @@ static void build_one_row(int i);
 static void kb_poll_cb(lv_timer_t *t);
 static void fill_signal(mgmt_signal_t *dst, const subghz_signal_info_t *src);
 static void rebuild_list_async(void *unused);
-static void import_done_async(void *user_data);
 static void stop_build_timer(void);
 static void open_rename_popup(int idx);
 static void on_rename_confirm(const char *text, void *user_data);
@@ -60,7 +59,6 @@ static void on_row_tap(lv_event_t *e);
 static void show_action_popup(int idx);
 static void close_action_popup(void);
 static void on_action_rename(lv_event_t *e);
-static void on_action_save(lv_event_t *e);
 static void on_action_delete(lv_event_t *e);
 static void on_action_transmit(lv_event_t *e);
 static void on_action_cancel(lv_event_t *e);
@@ -68,7 +66,6 @@ static void show_delete_confirm_popup(int idx);
 static void on_delete_confirmed(lv_event_t *e);
 static void on_delete_cancel(lv_event_t *e);
 static void do_delete(int idx);
-static void on_export_done(const char **lines, int count);
 static void close_confirm_popup(void);
 static bool s_text_input_open;
 static int  s_pending_rename_idx;
@@ -145,11 +142,11 @@ static void on_rename_confirm(const char *text, void *user_data)
         lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_BLUE, 0);
     }
 
-    /* Re-issue subghz_list so the rebuilt list reflects the new name.
+    /* Re-issue subghz_list sd so the rebuilt list reflects the new name.
      * The collect buffer will also contain the [SUBGHZ_RENAME] /
      * [SUBGHZ_RENAME_ERR] response line, which on_list_received picks
      * apart to update s_status_lbl after the list rebuild. */
-    uart_send_command("subghz_list");
+    uart_send_command("subghz_list sd");
     uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);
 }
 
@@ -174,12 +171,12 @@ static void open_rename_popup(int idx)
                              (void *)(intptr_t)idx);
 }
 
-/* Re-running subghz_import re-adds every .sub file on the SD card, so the
- * firmware-side list grows with each import. Hide byte-for-byte duplicates
- * (same type/freq/serial/btn/mf/name) from the UI; storage on JanOS is left
- * intact until the user taps Clear All. The `name` is included so users
- * who renamed a copy still see both rows (the rename is the entire point
- * of having two .sub files with identical payloads). */
+/* Users can drop Flipper-format .sub files into /sdcard/lab/subghz/ from
+ * the host side; multiple identical files occasionally end up there. Hide
+ * byte-for-byte duplicates (same type/freq/serial/btn/mf/name) from the UI
+ * — the files on disk are untouched. The `name` is included so users who
+ * renamed a copy still see both rows (the rename is the entire point of
+ * having two .sub files with identical payloads). */
 static bool is_duplicate_of_existing(const subghz_signal_info_t *p)
 {
     int freq_x100 = (int)(p->freq * 100.0f + 0.5f);
@@ -342,8 +339,8 @@ static void do_delete(int idx)
 
     ESP_LOGI(TAG, "Delete signal idx=%d", idx);
 
-    /* Refresh list after short delay */
-    uart_send_command("subghz_list");
+    /* Refresh SD list — sd_idx is positional and shifts after every delete. */
+    uart_send_command("subghz_list sd");
     uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);
 }
 
@@ -435,63 +432,6 @@ static void show_delete_confirm_popup(int idx)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Save (single-signal export) feedback                               */
-/* ------------------------------------------------------------------ */
-
-static char       s_export_feedback[96];
-static lv_color_t s_export_feedback_color;
-static bool       s_export_feedback_pending;
-
-static void export_feedback_async(void *user_data)
-{
-    (void)user_data;
-    if (!s_export_feedback_pending || !s_status_lbl) return;
-    lv_label_set_text(s_status_lbl, s_export_feedback);
-    lv_obj_set_style_text_color(s_status_lbl, s_export_feedback_color, 0);
-    s_export_feedback_pending = false;
-}
-
-static void on_export_done(const char **lines, int count)
-{
-    int idx = 0;
-    char name[64] = {0};
-
-    for (int i = 0; i < count; i++) {
-        const char *line = lines[i];
-        if (!line) continue;
-        if (!strstr(line, "[SUBGHZ_EXPORT] ")) continue;
-
-        const char *p = strstr(line, "idx=");
-        if (p) idx = atoi(p + 4);
-        p = strstr(line, "name=");
-        if (p) {
-            p += 5;
-            const char *end = strchr(p, ' ');
-            size_t len = end ? (size_t)(end - p) : strlen(p);
-            if (len >= sizeof(name)) len = sizeof(name) - 1;
-            memcpy(name, p, len);
-            name[len] = '\0';
-        }
-        break;
-    }
-
-    if (idx > 0 && name[0])
-        snprintf(s_export_feedback, sizeof(s_export_feedback),
-                 "Saved #%d as %s", idx, name);
-    else if (idx > 0)
-        snprintf(s_export_feedback, sizeof(s_export_feedback),
-                 "Saved #%d to favorites", idx);
-    else
-        snprintf(s_export_feedback, sizeof(s_export_feedback),
-                 "Export complete");
-    s_export_feedback_color = UI_ACCENT_GREEN;
-    s_export_feedback_pending = true;
-
-    if (!ui_lvgl_async_call(export_feedback_async, NULL))
-        ESP_LOGW(TAG, "export_feedback_async schedule failed");
-}
-
-/* ------------------------------------------------------------------ */
 /*  Per-row action popup                                               */
 /* ------------------------------------------------------------------ */
 
@@ -511,25 +451,6 @@ static void on_action_rename(lv_event_t *e)
     if (idx > 0) open_rename_popup(idx);
 }
 
-static void on_action_save(lv_event_t *e)
-{
-    (void)e;
-    int idx = s_action_target_idx;
-    close_action_popup();
-    if (idx <= 0) return;
-
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "subghz_export %d", idx);
-    uart_send_command(cmd);
-    /* Collect until SUBGHZ_EXPORT_END so we can show the saved file name. */
-    uart_start_collect("[SUBGHZ_EXPORT_END]", on_export_done);
-
-    if (s_status_lbl) {
-        lv_label_set_text_fmt(s_status_lbl, "Saving #%d to favorites...", idx);
-        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_BLUE, 0);
-    }
-}
-
 static void on_action_delete(lv_event_t *e)
 {
     (void)e;
@@ -546,7 +467,7 @@ static void on_action_transmit(lv_event_t *e)
     if (idx <= 0) return;
 
     char cmd[32];
-    snprintf(cmd, sizeof(cmd), "subghz_tx %d", idx);
+    snprintf(cmd, sizeof(cmd), "subghz_tx %d sd", idx);
     uart_send_command(cmd);
     led_indicator_tx_pulse(1500);
 
@@ -617,14 +538,13 @@ static void show_action_popup(int idx)
         lv_event_cb_t  cb;
     } btns[] = {
         { "Rename",   UI_ACCENT_BLUE,   on_action_rename   },
-        { "Save",     UI_ACCENT_GREEN,  on_action_save     },
         { "Delete",   UI_ACCENT_RED,    on_action_delete   },
         { "Transmit", UI_ACCENT_ORANGE, on_action_transmit },
         { "Cancel",   ui_muted_color(), on_action_cancel   },
     };
     for (int i = 0; i < (int)(sizeof(btns) / sizeof(btns[0])); i++) {
         lv_obj_t *b = lv_btn_create(brow);
-        lv_obj_set_size(b, 54, 30);
+        lv_obj_set_size(b, 68, 30);
         lv_obj_set_style_bg_color(b, btns[i].bg, 0);
         lv_obj_set_style_radius(b, 6, 0);
         lv_obj_add_event_cb(b, btns[i].cb, LV_EVENT_CLICKED, NULL);
@@ -738,129 +658,6 @@ static void close_confirm_popup(void)
     }
 }
 
-static void on_clear_confirmed(lv_event_t *e)
-{
-    (void)e;
-    close_confirm_popup();
-    uart_send_command("subghz_clear");
-
-    if (s_status_lbl) {
-        lv_label_set_text(s_status_lbl, "All signals cleared");
-        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_RED, 0);
-    }
-
-    s_sig_count = 0;
-    build_list();
-    ESP_LOGI(TAG, "Clear all signals");
-}
-
-static void on_clear_cancel(lv_event_t *e)
-{
-    (void)e;
-    close_confirm_popup();
-}
-
-static void on_clear_all(lv_event_t *e)
-{
-    (void)e;
-    if (s_confirm_popup) return;
-
-    s_confirm_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_confirm_popup, 220, 100);
-    lv_obj_center(s_confirm_popup);
-    style_popup_card(s_confirm_popup, 10, UI_ACCENT_RED);
-    lv_obj_set_flex_flow(s_confirm_popup, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(s_confirm_popup, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(s_confirm_popup, 10, 0);
-    lv_obj_set_style_pad_gap(s_confirm_popup, 8, 0);
-    lv_obj_clear_flag(s_confirm_popup, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *l = lv_label_create(s_confirm_popup);
-    lv_label_set_text(l, "Delete ALL signals?");
-    lv_obj_set_style_text_color(l, ui_text_color(), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
-
-    lv_obj_t *brow = lv_obj_create(s_confirm_popup);
-    lv_obj_set_size(brow, LV_PCT(100), 32);
-    lv_obj_set_flex_flow(brow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(brow, LV_FLEX_ALIGN_SPACE_EVENLY,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_bg_opa(brow, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(brow, 0, 0);
-
-    lv_obj_t *yes = lv_btn_create(brow);
-    lv_obj_set_size(yes, 80, 28);
-    lv_obj_set_style_bg_color(yes, UI_ACCENT_RED, 0);
-    lv_obj_set_style_radius(yes, 6, 0);
-    lv_obj_add_event_cb(yes, on_clear_confirmed, LV_EVENT_CLICKED, NULL);
-    l = lv_label_create(yes);
-    lv_label_set_text(l, "Yes");
-    lv_obj_center(l);
-
-    lv_obj_t *no = lv_btn_create(brow);
-    lv_obj_set_size(no, 80, 28);
-    lv_obj_set_style_bg_color(no, ui_card_color(), 0);
-    lv_obj_set_style_radius(no, 6, 0);
-    lv_obj_add_event_cb(no, on_clear_cancel, LV_EVENT_CLICKED, NULL);
-    l = lv_label_create(no);
-    lv_label_set_text(l, "Cancel");
-    lv_obj_set_style_text_color(l, ui_text_color(), 0);
-    lv_obj_center(l);
-}
-
-static void on_export_all(lv_event_t *e)
-{
-    (void)e;
-    uart_send_command("subghz_export all");
-    if (s_status_lbl) {
-        lv_label_set_text(s_status_lbl, "Export sent");
-        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_GREEN, 0);
-    }
-    ESP_LOGI(TAG, "Export all");
-}
-
-static int s_imported_count;
-
-static void import_done_async(void *user_data)
-{
-    (void)user_data;
-    if (s_status_lbl) {
-        lv_label_set_text_fmt(s_status_lbl, "Imported %d signal%s",
-                              s_imported_count, s_imported_count == 1 ? "" : "s");
-        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_GREEN, 0);
-    }
-}
-
-static void on_import_done(const char **lines, int count)
-{
-    int imported = 0;
-    for (int i = 0; i < count; i++) {
-        if (strstr(lines[i], "[SUBGHZ_IMPORT] "))
-            imported++;
-    }
-    s_imported_count = imported;
-
-    /* Update label + chain follow-up subghz_list on the LVGL task. */
-    if (!ui_lvgl_async_call(import_done_async, NULL))
-        ESP_LOGW(TAG, "import_done_async schedule failed");
-
-    uart_send_command("subghz_list");
-    uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);
-}
-
-static void on_import(lv_event_t *e)
-{
-    (void)e;
-    uart_send_command("subghz_import all");
-    uart_start_collect("[SUBGHZ_IMPORT_END]", on_import_done);
-    if (s_status_lbl) {
-        lv_label_set_text(s_status_lbl, "Importing from SD...");
-        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_BLUE, 0);
-    }
-    ESP_LOGI(TAG, "Import all from SD");
-}
-
 static void on_back(lv_event_t *e)
 {
     (void)e;
@@ -902,64 +699,22 @@ void show_subghz_manage_screen(void)
     s_pending_delete_idx = 0;
     s_action_target_idx = 0;
     s_rename_feedback_pending = false;
-    s_export_feedback_pending = false;
 
     lv_obj_t *scr = ui_screen_clear();
-    ui_create_top_bar(scr, "Manage Signals", on_back, NULL);
+    ui_create_top_bar(scr, "SD Signals", on_back, NULL);
 
-    /* Action bar */
-    lv_obj_t *abar = lv_obj_create(scr);
-    lv_obj_set_size(abar, LV_PCT(100), 28);
-    lv_obj_set_y(abar, 36);
-    lv_obj_set_flex_flow(abar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(abar, LV_FLEX_ALIGN_SPACE_EVENLY,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_bg_opa(abar, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(abar, 0, 0);
-    lv_obj_set_style_pad_all(abar, 2, 0);
-
-    lv_obj_t *btn, *lbl;
-
-    btn = lv_btn_create(abar);
-    lv_obj_set_size(btn, 70, 22);
-    lv_obj_set_style_bg_color(btn, UI_ACCENT_GREEN, 0);
-    lv_obj_set_style_radius(btn, 5, 0);
-    lv_obj_add_event_cb(btn, on_export_all, LV_EVENT_CLICKED, NULL);
-    lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, "Export");
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
-    lv_obj_center(lbl);
-
-    btn = lv_btn_create(abar);
-    lv_obj_set_size(btn, 70, 22);
-    lv_obj_set_style_bg_color(btn, UI_ACCENT_BLUE, 0);
-    lv_obj_set_style_radius(btn, 5, 0);
-    lv_obj_add_event_cb(btn, on_import, LV_EVENT_CLICKED, NULL);
-    lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, "Import");
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
-    lv_obj_center(lbl);
-
-    btn = lv_btn_create(abar);
-    lv_obj_set_size(btn, 70, 22);
-    lv_obj_set_style_bg_color(btn, UI_ACCENT_RED, 0);
-    lv_obj_set_style_radius(btn, 5, 0);
-    lv_obj_add_event_cb(btn, on_clear_all, LV_EVENT_CLICKED, NULL);
-    lbl = lv_label_create(btn);
-    lv_label_set_text(lbl, "Clear All");
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
-    lv_obj_center(lbl);
-
+    /* Status line sits directly under the top bar — no action bar in the
+     * SD-only flow (Export/Import/Clear All are gone). */
     s_status_lbl = lv_label_create(scr);
-    lv_obj_set_y(s_status_lbl, 66);
+    lv_obj_set_y(s_status_lbl, 40);
     lv_obj_set_x(s_status_lbl, 8);
     lv_obj_set_style_text_font(s_status_lbl, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(s_status_lbl, ui_muted_color(), 0);
     lv_label_set_text(s_status_lbl, "Loading...");
 
     s_list = lv_obj_create(scr);
-    lv_obj_set_size(s_list, LV_PCT(100), 240 - 82);
-    lv_obj_set_y(s_list, 82);
+    lv_obj_set_size(s_list, LV_PCT(100), 240 - 56);
+    lv_obj_set_y(s_list, 56);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(s_list, 4, 0);
     lv_obj_set_style_pad_gap(s_list, 3, 0);
@@ -968,7 +723,7 @@ void show_subghz_manage_screen(void)
     lv_obj_set_style_border_width(s_list, 0, 0);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_AUTO);
 
-    uart_send_command("subghz_list");
+    uart_send_command("subghz_list sd");
     uart_start_collect("[SUBGHZ_LIST_END]", on_list_received);
 
     s_kb_timer = lv_timer_create(kb_poll_cb, 50, NULL);

@@ -107,6 +107,7 @@ typedef enum {
     HUNTER_STATUS_DUPLICATE,
     HUNTER_STATUS_ERROR,
     HUNTER_STATUS_STOPPED,
+    HUNTER_STATUS_OK,
 } hunter_status_kind_t;
 
 static hunter_signal_chunk_t *s_signal_head;
@@ -131,6 +132,9 @@ static lv_obj_t   *s_btn_stop;
 static lv_obj_t   *s_sig_list;
 static lv_obj_t   *s_sig_spacer;
 static lv_obj_t   *s_empty_lbl;
+static lv_obj_t   *s_action_popup;
+static lv_obj_t   *s_leave_popup;
+static int         s_pending_action_idx;
 static hunter_row_view_t s_row_pool[SIGNAL_ROW_POOL_SIZE];
 static lv_timer_t *s_kb_timer;
 static lv_timer_t *s_ui_timer;
@@ -146,6 +150,7 @@ static void hunter_line_cb(const char *line);
 static void kb_poll_cb(lv_timer_t *t);
 static void ui_tick_cb(lv_timer_t *t);
 static void on_signal_list_scroll(lv_event_t *e);
+static void on_signal_row_clicked(lv_event_t *e);
 static void refresh_signal_list_view(void);
 static void clear_signal_history(void);
 static void fill_signal(hunter_signal_t *dst, const subghz_signal_info_t *src);
@@ -189,6 +194,7 @@ static lv_color_t status_color_for(hunter_status_kind_t kind)
     case HUNTER_STATUS_SCAN:      return UI_ACCENT_PINK;
     case HUNTER_STATUS_ERROR:     return UI_ACCENT_RED;
     case HUNTER_STATUS_DUPLICATE: return UI_ACCENT_CYAN;
+    case HUNTER_STATUS_OK:        return UI_ACCENT_GREEN;
     case HUNTER_STATUS_TIMEOUT:
     case HUNTER_STATUS_IDLE:
     case HUNTER_STATUS_STOPPED:
@@ -381,6 +387,7 @@ static void configure_signal_row(hunter_row_view_t *view)
     lv_obj_set_style_pad_all(view->row, 1, 0);
     lv_obj_set_style_pad_gap(view->row, 2, 0);
     lv_obj_set_style_bg_color(view->row, ui_card_color(), 0);
+    lv_obj_set_style_bg_color(view->row, ui_card_pressed_color(), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(view->row, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(view->row, 0, 0);
     lv_obj_set_style_radius(view->row, 3, 0);
@@ -388,6 +395,9 @@ static void configure_signal_row(hunter_row_view_t *view)
     lv_obj_set_flex_flow(view->row, LV_FLEX_FLOW_ROW);
     lv_obj_clear_flag(view->row, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(view->row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(view->row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_user_data(view->row, (void *)(intptr_t)-1);
+    lv_obj_add_event_cb(view->row, on_signal_row_clicked, LV_EVENT_CLICKED, NULL);
 
     view->idx = lv_label_create(view->row);
     lv_obj_set_width(view->idx, COL_IDX_W);
@@ -441,8 +451,10 @@ static void refresh_signal_list_view(void)
         lv_obj_clear_flag(s_empty_lbl, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_height(s_sig_spacer, 1);
         for (int i = 0; i < SIGNAL_ROW_POOL_SIZE; i++) {
-            if (s_row_pool[i].row)
+            if (s_row_pool[i].row) {
+                lv_obj_set_user_data(s_row_pool[i].row, (void *)(intptr_t)-1);
                 lv_obj_add_flag(s_row_pool[i].row, LV_OBJ_FLAG_HIDDEN);
+            }
         }
         return;
     }
@@ -457,6 +469,7 @@ static void refresh_signal_list_view(void)
             continue;
 
         if ((size_t)i >= copied) {
+            lv_obj_set_user_data(view->row, (void *)(intptr_t)-1);
             lv_obj_add_flag(view->row, LV_OBJ_FLAG_HIDDEN);
             continue;
         }
@@ -465,6 +478,7 @@ static void refresh_signal_list_view(void)
         const hunter_signal_t *sig = &window[i];
 
         lv_obj_set_pos(view->row, 0, hunter_row_y(signal_index, total));
+        lv_obj_set_user_data(view->row, (void *)(intptr_t)sig->idx);
         lv_label_set_text_fmt(view->idx, "%d", sig->idx);
         lv_label_set_text(view->type, sig->type);
         lv_obj_set_style_text_color(view->type,
@@ -476,6 +490,161 @@ static void refresh_signal_list_view(void)
         lv_label_set_text(view->serial, sig->serial[0] ? sig->serial : "--");
         lv_obj_clear_flag(view->row, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+static bool find_signal_by_idx(int idx, hunter_signal_t *out)
+{
+    bool found = false;
+
+    if (idx <= 0 || !out) return false;
+
+    portENTER_CRITICAL(&s_signal_lock);
+    for (hunter_signal_chunk_t *chunk = s_signal_head; chunk && !found;
+         chunk = chunk->next) {
+        for (size_t i = 0; i < chunk->used; i++) {
+            if (chunk->items[i].idx == idx) {
+                *out = chunk->items[i];
+                found = true;
+                break;
+            }
+        }
+    }
+    portEXIT_CRITICAL(&s_signal_lock);
+
+    return found;
+}
+
+static void close_action_popup(void)
+{
+    if (s_action_popup) {
+        lv_obj_delete(s_action_popup);
+        s_action_popup = NULL;
+    }
+}
+
+static void close_leave_popup(void)
+{
+    if (s_leave_popup) {
+        lv_obj_delete(s_leave_popup);
+        s_leave_popup = NULL;
+    }
+}
+
+static void on_action_save(lv_event_t *e)
+{
+    (void)e;
+    int idx = s_pending_action_idx;
+    close_action_popup();
+    if (idx <= 0) return;
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "subghz_save %d", idx);
+    uart_send_command(cmd);
+    set_status(HUNTER_STATUS_IDLE, "Saving #%d to SD...", idx);
+}
+
+static void on_action_transmit(lv_event_t *e)
+{
+    (void)e;
+    int idx = s_pending_action_idx;
+    close_action_popup();
+    if (idx <= 0) return;
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "subghz_tx %d mem", idx);
+    uart_send_command(cmd);
+    led_indicator_tx_pulse(1500);
+    set_status(HUNTER_STATUS_IDLE, "Transmitting #%d...", idx);
+}
+
+static void on_action_cancel(lv_event_t *e)
+{
+    (void)e;
+    close_action_popup();
+}
+
+static void show_action_popup(const hunter_signal_t *sig)
+{
+    if (!sig) return;
+    close_action_popup();
+
+    s_pending_action_idx = sig->idx;
+
+    s_action_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_action_popup, 290, 170);
+    lv_obj_center(s_action_popup);
+    style_popup_card(s_action_popup, 10, UI_ACCENT_PINK);
+    lv_obj_set_flex_flow(s_action_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_action_popup, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(s_action_popup, 10, 0);
+    lv_obj_set_style_pad_gap(s_action_popup, 8, 0);
+    lv_obj_clear_flag(s_action_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_action_popup);
+    lv_label_set_text_fmt(title, "Signal #%d (%s)", sig->idx,
+                          sig->type[0] ? sig->type : "--");
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *sub = lv_label_create(s_action_popup);
+    lv_obj_set_width(sub, 270);
+    lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+    lv_label_set_text_fmt(sub, "%d.%02d MHz  %s",
+                          (int)sig->freq,
+                          ((int)(sig->freq * 100.0f + 0.5f)) % 100,
+                          sig->mf[0] ? sig->mf : sig->serial);
+    lv_obj_set_style_text_color(sub, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(sub, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t *btn_row = lv_obj_create(s_action_popup);
+    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_style_pad_gap(btn_row, 6, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    struct {
+        const char    *label;
+        lv_color_t     bg;
+        lv_event_cb_t  cb;
+    } btns[] = {
+        { "Save to SD", UI_ACCENT_GREEN,  on_action_save     },
+        { "Transmit",   UI_ACCENT_ORANGE, on_action_transmit },
+        { "Cancel",     ui_muted_color(), on_action_cancel   },
+    };
+    for (int i = 0; i < (int)(sizeof(btns) / sizeof(btns[0])); i++) {
+        lv_obj_t *b = lv_btn_create(btn_row);
+        lv_obj_set_size(b, 82, 32);
+        lv_obj_set_style_bg_color(b, btns[i].bg, 0);
+        lv_obj_set_style_radius(b, 6, 0);
+        lv_obj_add_event_cb(b, btns[i].cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, btns[i].label);
+        lv_obj_set_style_text_color(l, lv_color_white(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_center(l);
+    }
+}
+
+static void on_signal_row_clicked(lv_event_t *e)
+{
+    lv_obj_t *row = lv_event_get_current_target(e);
+    if (!row) return;
+    if (lv_obj_has_flag(row, LV_OBJ_FLAG_HIDDEN)) return;
+
+    int idx = (int)(intptr_t)lv_obj_get_user_data(row);
+    if (idx <= 0) return;
+
+    hunter_signal_t snap;
+    if (!find_signal_by_idx(idx, &snap)) return;
+
+    show_action_popup(&snap);
 }
 
 static void parse_fa_status_line(const char *line)
@@ -520,9 +689,57 @@ static void parse_fa_status_line(const char *line)
     }
 }
 
+static void hunter_handle_event_line(const char *line)
+{
+    if (!line) return;
+
+    if (strstr(line, "[SUBGHZ_SAVE] ")) {
+        int idx = 0;
+        const char *p = strstr(line, "idx=");
+        if (p) idx = atoi(p + 4);
+        if (idx > 0)
+            set_status(HUNTER_STATUS_OK, "#%d saved to SD", idx);
+        else
+            set_status(HUNTER_STATUS_OK, "Saved to SD");
+        return;
+    }
+
+    if (strstr(line, "[SUBGHZ_SAVE_ERR] ")) {
+        int idx = 0;
+        char reason[32] = {0};
+        const char *p = strstr(line, "idx=");
+        if (p) idx = atoi(p + 4);
+        p = strstr(line, "reason=");
+        if (p) {
+            p += 7;
+            const char *end = strchr(p, ' ');
+            size_t len = end ? (size_t)(end - p) : strlen(p);
+            if (len >= sizeof(reason)) len = sizeof(reason) - 1;
+            memcpy(reason, p, len);
+            reason[len] = '\0';
+        }
+        set_status(HUNTER_STATUS_ERROR, "Save #%d failed: %s", idx,
+                   reason[0] ? reason : "error");
+        return;
+    }
+
+    if (strstr(line, "[SUBGHZ_TX] ")) {
+        int idx = 0;
+        const char *p = strstr(line, "idx=");
+        if (p) idx = atoi(p + 4);
+        if (idx > 0)
+            set_status(HUNTER_STATUS_OK, "Transmitted #%d", idx);
+        else
+            set_status(HUNTER_STATUS_OK, "Transmitted");
+        return;
+    }
+}
+
 static void hunter_line_cb(const char *line)
 {
     subghz_signal_info_t parsed;
+
+    hunter_handle_event_line(line);
 
     if (!s_running)
         return;
@@ -565,7 +782,9 @@ static void stop_hunting(void)
     if (!s_running) return;
     s_running = false;
     uart_send_command("subghz_stop");
-    uart_set_line_callback(NULL);
+    /* Keep the line callback installed so [SUBGHZ_SAVE] / [SUBGHZ_TX]
+     * responses from the action popup still update the status banner.
+     * The full teardown in on_back/on_settings clears it. */
 
     if (s_spinner)
         lv_obj_add_flag(s_spinner, LV_OBJ_FLAG_HIDDEN);
@@ -602,6 +821,9 @@ static void hunter_reset_lvgl_pointers(void)
     s_sig_list       = NULL;
     s_sig_spacer     = NULL;
     s_empty_lbl      = NULL;
+    s_action_popup   = NULL;
+    s_leave_popup    = NULL;
+    s_pending_action_idx = 0;
 }
 
 static void hunter_start_uart(void)
@@ -624,24 +846,121 @@ static void hunter_start_uart(void)
     ESP_LOGI(TAG, "Hunter UART: %s", cmd);
 }
 
+static void hunter_full_teardown(void)
+{
+    stop_hunting();
+    uart_stop_collect();
+    uart_set_line_callback(NULL);
+    close_action_popup();
+    close_leave_popup();
+    hunter_delete_timers();
+}
+
 static void on_settings(lv_event_t *e)
 {
     (void)e;
-    stop_hunting();
-    uart_stop_collect();
-    hunter_delete_timers();
+    hunter_full_teardown();
     show_subghz_hunter_settings_screen();
+}
+
+static void perform_back(void)
+{
+    hunter_full_teardown();
+    clear_signal_history();
+    show_subghz_screen();
+}
+
+static void on_leave_confirm(lv_event_t *e)
+{
+    (void)e;
+    close_leave_popup();
+    perform_back();
+}
+
+static void on_leave_cancel(lv_event_t *e)
+{
+    (void)e;
+    close_leave_popup();
+}
+
+static void show_leave_popup(size_t count)
+{
+    close_leave_popup();
+
+    s_leave_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_leave_popup, 290, 170);
+    lv_obj_center(s_leave_popup);
+    style_popup_card(s_leave_popup, 10, UI_ACCENT_RED);
+    lv_obj_set_flex_flow(s_leave_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_leave_popup, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(s_leave_popup, 10, 0);
+    lv_obj_set_style_pad_gap(s_leave_popup, 8, 0);
+    lv_obj_clear_flag(s_leave_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_leave_popup);
+    lv_label_set_text(title, "Leave Hunter?");
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *body = lv_label_create(s_leave_popup);
+    lv_obj_set_width(body, 270);
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_label_set_text_fmt(body,
+        "%lu unsaved capture%s will be cleared from this view. "
+        "Save them to SD first?",
+        (unsigned long)count, count == 1 ? "" : "s");
+    lv_obj_set_style_text_color(body, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(body, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t *btn_row = lv_obj_create(s_leave_popup);
+    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_style_pad_gap(btn_row, 6, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *leave_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(leave_btn, 110, 32);
+    lv_obj_set_style_bg_color(leave_btn, UI_ACCENT_RED, 0);
+    lv_obj_set_style_radius(leave_btn, 6, 0);
+    lv_obj_add_event_cb(leave_btn, on_leave_confirm, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ll = lv_label_create(leave_btn);
+    lv_label_set_text(ll, "Leave");
+    lv_obj_set_style_text_color(ll, lv_color_white(), 0);
+    lv_obj_set_style_text_font(ll, &lv_font_montserrat_12, 0);
+    lv_obj_center(ll);
+
+    lv_obj_t *stay_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(stay_btn, 110, 32);
+    lv_obj_set_style_bg_color(stay_btn, ui_muted_color(), 0);
+    lv_obj_set_style_radius(stay_btn, 6, 0);
+    lv_obj_add_event_cb(stay_btn, on_leave_cancel, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *sl = lv_label_create(stay_btn);
+    lv_label_set_text(sl, "Stay");
+    lv_obj_set_style_text_color(sl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(sl, &lv_font_montserrat_12, 0);
+    lv_obj_center(sl);
 }
 
 static void on_back(lv_event_t *e)
 {
     (void)e;
-    stop_hunting();
-    uart_stop_collect();
-    hunter_delete_timers();
 
-    clear_signal_history();
-    show_subghz_screen();
+    if (s_leave_popup) return;
+
+    size_t total = signal_count_snapshot();
+    if (total > 0) {
+        show_leave_popup(total);
+        return;
+    }
+
+    perform_back();
 }
 
 static void kb_poll_cb(lv_timer_t *t)
@@ -650,6 +969,9 @@ static void kb_poll_cb(lv_timer_t *t)
     uint8_t key = cardkb_read_key();
     if (key == 0) return;
     if (key == 0x1B || key == 0x08 || key == 0x7F) {
+        /* Let popups consume ESC instead of propagating to Back. */
+        if (s_action_popup) { close_action_popup(); return; }
+        if (s_leave_popup)  { close_leave_popup();  return; }
         on_back(NULL);
     }
 }

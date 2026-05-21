@@ -297,7 +297,7 @@ void show_subghz_scanner_screen(void)
 
     lv_obj_t *scr = ui_screen_clear();
 
-    lv_obj_t *bar = ui_create_top_bar(scr, "Scanner", on_back, NULL);
+    lv_obj_t *bar = ui_create_top_bar(scr, "Quick Scan", on_back, NULL);
     {
         lv_obj_t *title = lv_obj_get_child(bar, 1);
         if (title) {
