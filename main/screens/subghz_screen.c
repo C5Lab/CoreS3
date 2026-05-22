@@ -6,6 +6,7 @@
 #include "subghz_hunter_screen.h"
 #include "subghz_scanner_screen.h"
 #include "subghz_weather_screen.h"
+#include "subghz_settings_screen.h"
 #include "home_screen.h"
 #include "ui_helpers.h"
 #include "device_info.h"
@@ -68,6 +69,13 @@ static void on_weather(lv_event_t *e)
     show_subghz_weather_screen();
 }
 
+static void on_settings(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Settings");
+    show_subghz_settings_screen();
+}
+
 void show_subghz_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
@@ -87,7 +95,7 @@ void show_subghz_screen(void)
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_y(grid, 36);
 
-    /* 7 tiles in 2 columns must fit the 320x240 screen below the 36px top bar.
+    /* 8 tiles in 2 columns must fit the 320x240 screen below the 36px top bar.
      * Default tile height (48) overflows; shrink to 38 (~20% smaller) so all
      * rows fit without scrolling. */
     lv_obj_t *tiles[] = {
@@ -98,6 +106,7 @@ void show_subghz_screen(void)
         ui_create_tile(grid, LV_SYMBOL_TINT,     "Weather",    UI_ACCENT_BLUE,   on_weather,  NULL),
         ui_create_tile(grid, LV_SYMBOL_WARNING,  "Jammer",     UI_ACCENT_RED,    on_jammer,   NULL),
         ui_create_tile(grid, LV_SYMBOL_POWER,    "Tesla",      UI_ACCENT_PURPLE, on_tesla,    NULL),
+        ui_create_tile(grid, LV_SYMBOL_SETTINGS, "Settings",   ui_muted_color(), on_settings, NULL),
     };
     for (size_t i = 0; i < sizeof(tiles) / sizeof(tiles[0]); i++)
         lv_obj_set_height(tiles[i], 38);

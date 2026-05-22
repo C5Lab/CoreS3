@@ -37,6 +37,7 @@ idf_component_register(
         "screens/subghz_scanner_settings_screen.c"
         "screens/subghz_hunter_settings_screen.c"
         "screens/subghz_listen_settings_screen.c"
+        "screens/subghz_settings_screen.c"
         "screens/subghz_weather_screen.c"
     INCLUDE_DIRS
         "."
