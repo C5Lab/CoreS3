@@ -1059,7 +1059,7 @@ static void show_action_popup(const subghz_signal_t *sig)
     s_pending_action_idx = sig->idx;
 
     s_action_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_action_popup, 290, 170);
+    lv_obj_set_size(s_action_popup, 290, 190);
     lv_obj_center(s_action_popup);
     style_popup_card(s_action_popup, 10, UI_ACCENT_CYAN);
     lv_obj_set_flex_flow(s_action_popup, LV_FLEX_FLOW_COLUMN);
@@ -1083,6 +1083,16 @@ static void show_action_popup(const subghz_signal_t *sig)
     lv_obj_set_style_text_color(name_lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(name_lbl, LV_TEXT_ALIGN_CENTER, 0);
+
+    if (sig->serial[0] && strcmp(sig->serial, "--") != 0) {
+        lv_obj_t *code_lbl = lv_label_create(s_action_popup);
+        lv_obj_set_width(code_lbl, 270);
+        lv_label_set_long_mode(code_lbl, LV_LABEL_LONG_DOT);
+        lv_label_set_text_fmt(code_lbl, "code: %s", sig->serial);
+        lv_obj_set_style_text_color(code_lbl, UI_ACCENT_CYAN, 0);
+        lv_obj_set_style_text_font(code_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_align(code_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    }
 
     lv_obj_t *btn_row = lv_obj_create(s_action_popup);
     lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
@@ -1360,7 +1370,7 @@ void show_subghz_listen_screen(void)
 
     static const struct { const char *t; int w; } cols[] = {
         {"#", COL_IDX_W}, {"Type", COL_TYPE_W}, {"Freq", COL_FREQ_W},
-        {"Signal", COL_MF_W}, {"Serial", COL_SER_W},
+        {"Signal", COL_MF_W}, {"Code", COL_SER_W},
     };
     for (int i = 0; i < 5; i++) {
         lv_obj_t *l = lv_label_create(hdr);

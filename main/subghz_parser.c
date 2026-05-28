@@ -10,6 +10,7 @@ static const char *const s_signal_keys[] = {
     "freq=",
     "bits=",
     "serial=",
+    "id=",
     "btn=",
     "proto=",
     "learn=",
@@ -167,6 +168,11 @@ bool subghz_parse_signal_line(const char *line, subghz_signal_info_t *out)
     extract_float_field(fields, "freq=", &out->freq);
     extract_int_field(fields, "bits=", &out->bits);
     extract_field(fields, "serial=", out->serial, sizeof(out->serial));
+    if (!out->serial[0]) {
+        char id[32];
+        if (extract_field(fields, "id=", id, sizeof(id)))
+            snprintf(out->serial, sizeof(out->serial), "%s", id);
+    }
     extract_int_field(fields, "btn=", &out->btn);
     extract_field(fields, "proto=", out->proto, sizeof(out->proto));
     extract_field(fields, "learn=", out->learn, sizeof(out->learn));

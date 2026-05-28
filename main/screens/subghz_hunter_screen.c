@@ -1119,7 +1119,7 @@ static void hunter_build_ui(lv_obj_t *scr)
 
     static const struct { const char *t; int w; } cols[] = {
         {"#", COL_IDX_W}, {"Type", COL_TYPE_W}, {"Freq", COL_FREQ_W},
-        {"Signal", COL_MF_W}, {"Serial", COL_SER_W},
+        {"Signal", COL_MF_W}, {"Code", COL_SER_W},
     };
     for (int i = 0; i < 5; i++) {
         lv_obj_t *l = lv_label_create(hdr);
