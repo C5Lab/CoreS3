@@ -1,10 +1,13 @@
 #ifndef DEVICE_INFO_H
 #define DEVICE_INFO_H
 
+#include <stdbool.h>
+
 /**
  * One-shot query of the firmware's `board_name` CLI command over UART.
  * Must be called once after uart_handler_init(); blocks for up to ~500 ms
  * waiting for the `board_name=...` response, then caches the result.
+ * Also probes `subghz_status` for module availability.
  */
 void device_info_init(void);
 
@@ -14,5 +17,8 @@ void device_info_init(void);
  * Always returns a non-NULL, NUL-terminated string safe to use as a title.
  */
 const char *device_info_subghz_title(void);
+
+/** True if firmware responded to subghz_status with [SUBGHZ_STATUS]. */
+bool device_info_has_subghz(void);
 
 #endif

@@ -34,4 +34,21 @@ void uart_stop_collect(void);
 bool uart_is_collecting(void);
 void uart_set_line_callback(uart_line_callback_t callback);
 
+/** Discard pending bytes in the UART RX driver buffer. */
+void uart_handler_flush_rx(void);
+
+/**
+ * Send a command and block until a line containing `wait_substr` arrives
+ * (or timeout). Copies the matching line into `out` (NUL-terminated).
+ * Returns true on success. Must not be called from uart_rx_task.
+ */
+bool uart_send_wait_line(const char *cmd, const char *wait_substr,
+                         char *out, size_t out_sz, int timeout_ms);
+
+/**
+ * Block until a line containing `wait_substr` arrives (no command sent).
+ */
+bool uart_wait_for_line(const char *wait_substr, char *out, size_t out_sz,
+                        int timeout_ms);
+
 #endif

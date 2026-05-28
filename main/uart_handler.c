@@ -5,6 +5,7 @@
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -39,6 +40,13 @@ static int    collected_capacity = 0;
 static char end_marker[64] = {0};
 static uart_collect_callback_t collect_callback = NULL;
 static TickType_t collect_start_tick = 0;
+
+static SemaphoreHandle_t sync_mutex = NULL;
+static SemaphoreHandle_t sync_sem   = NULL;
+static volatile bool     sync_active = false;
+static char              sync_substr[64];
+static char             *sync_out     = NULL;
+static size_t            sync_out_sz  = 0;
 
 static bool ensure_capacity(int needed)
 {
@@ -121,6 +129,15 @@ static void process_line(char *line)
                 collect_callback((const char **)collected_lines, collected_count);
             release_lines();
         }
+    }
+
+    if (sync_active && sync_out && sync_substr[0] &&
+        strstr(line, sync_substr) != NULL) {
+        strncpy(sync_out, line, sync_out_sz - 1);
+        sync_out[sync_out_sz - 1] = '\0';
+        sync_active = false;
+        if (sync_sem)
+            xSemaphoreGive(sync_sem);
     }
 
     if (line_callback)
@@ -219,6 +236,9 @@ void uart_handler_init(void)
     ESP_ERROR_CHECK(uart_set_pin(UART_PORT, tx_pin, rx_pin,
                                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
 
+    sync_mutex = xSemaphoreCreateMutex();
+    sync_sem   = xSemaphoreCreateBinary();
+
     xTaskCreate(uart_rx_task, "uart_rx", 8192, NULL, 12, NULL);
     const char *port_name = (uart_port_mode == UART_PORT_MODE_PORTC) ? "Port C" : "MBus";
     ESP_LOGI(TAG, "UART initialised %s TX=%d RX=%d @ %d (port %d)",
@@ -260,4 +280,64 @@ bool uart_is_collecting(void)
 void uart_set_line_callback(uart_line_callback_t callback)
 {
     line_callback = callback;
+}
+
+void uart_handler_flush_rx(void)
+{
+    uart_flush(UART_PORT);
+}
+
+bool uart_send_wait_line(const char *cmd, const char *wait_substr,
+                         char *out, size_t out_sz, int timeout_ms)
+{
+    if (!cmd || !wait_substr || !out || out_sz == 0 || !sync_mutex || !sync_sem)
+        return false;
+
+    if (xSemaphoreTake(sync_mutex, pdMS_TO_TICKS(5000)) != pdTRUE)
+        return false;
+
+    xSemaphoreTake(sync_sem, 0);
+
+    sync_active = true;
+    strncpy(sync_substr, wait_substr, sizeof(sync_substr) - 1);
+    sync_substr[sizeof(sync_substr) - 1] = '\0';
+    sync_out    = out;
+    sync_out_sz = out_sz;
+    out[0]      = '\0';
+
+    uart_handler_flush_rx();
+    uart_send_command(cmd);
+
+    bool ok = (xSemaphoreTake(sync_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+    sync_active = false;
+    sync_out    = NULL;
+
+    xSemaphoreGive(sync_mutex);
+    return ok;
+}
+
+bool uart_wait_for_line(const char *wait_substr, char *out, size_t out_sz,
+                        int timeout_ms)
+{
+    if (!wait_substr || !out || out_sz == 0 || !sync_mutex || !sync_sem)
+        return false;
+
+    if (xSemaphoreTake(sync_mutex, pdMS_TO_TICKS(5000)) != pdTRUE)
+        return false;
+
+    xSemaphoreTake(sync_sem, 0);
+
+    sync_active = true;
+    strncpy(sync_substr, wait_substr, sizeof(sync_substr) - 1);
+    sync_substr[sizeof(sync_substr) - 1] = '\0';
+    sync_out    = out;
+    sync_out_sz = out_sz;
+    out[0]      = '\0';
+
+    bool ok = (xSemaphoreTake(sync_sem, pdMS_TO_TICKS(timeout_ms)) == pdTRUE);
+    sync_active = false;
+    sync_out    = NULL;
+
+    xSemaphoreGive(sync_mutex);
+    return ok;
 }

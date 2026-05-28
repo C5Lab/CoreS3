@@ -104,7 +104,11 @@ void save_dark_mode_to_nvs(bool enabled);
 void save_boot_sound_to_nvs(boot_sound_mode_t mode);
 void save_uart_port_to_nvs(uart_port_mode_t mode);
 void save_screen_timeout_to_nvs(uint16_t seconds);
+void save_red_team_to_nvs(bool enabled);
 void load_settings_from_nvs(void);
+
+/** Returns true when Red Team attacks are enabled (NVS, default off). */
+bool ui_red_team_enabled(void);
 
 /** Start periodic check for screen idle (call after display + brightness init). */
 void ui_screen_timeout_init(void);

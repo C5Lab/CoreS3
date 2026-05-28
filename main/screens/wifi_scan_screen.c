@@ -1,6 +1,7 @@
 #include "wifi_scan_screen.h"
 #include "attack_select_screen.h"
 #include "home_screen.h"
+#include "inspect_network.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "psram_dynarr.h"
@@ -35,52 +36,56 @@ int wifi_scan_get_selected(int *indices, int max_indices)
 }
 
 /* ---- CSV parsing ---- */
-static const char *parse_quoted_field(const char *p, char *out, int max_len)
-{
-    if (*p != '"') return NULL;
-    p++;
-    int i = 0;
-    while (*p && *p != '"' && i < max_len - 1)
-        out[i++] = *p++;
-    out[i] = '\0';
-    if (*p != '"') return NULL;
-    p++;
-    if (*p == ',') p++;
-    return p;
-}
-
 static bool parse_network_line(const char *line, wifi_network_t *net)
 {
     if (line[0] != '"') return false;
-    const char *p = line;
-    char field[64];
 
-    p = parse_quoted_field(p, field, sizeof(field));
-    if (!p) return false;
-    net->index = (uint8_t)atoi(field);
+    char temp[512];
+    strncpy(temp, line, sizeof(temp) - 1);
+    temp[sizeof(temp) - 1] = '\0';
 
-    p = parse_quoted_field(p, net->ssid, sizeof(net->ssid));
-    if (!p) return false;
+    char *fields[10] = {NULL};
+    int field_idx = 0;
+    char *p = temp;
+    while (*p && field_idx < 10) {
+        if (*p == '"') {
+            p++;
+            fields[field_idx++] = p;
+            while (*p && *p != '"') p++;
+            if (*p == '"') { *p = '\0'; p++; }
+            if (*p == ',') p++;
+        } else {
+            p++;
+        }
+    }
+    if (field_idx < 8) return false;
 
-    p = parse_quoted_field(p, field, sizeof(field)); /* skip empty */
-    if (!p) return false;
+    net->index = (uint8_t)atoi(fields[0]);
+    strncpy(net->ssid, fields[1], sizeof(net->ssid) - 1);
+    net->ssid[sizeof(net->ssid) - 1] = '\0';
+    strncpy(net->bssid, fields[3], sizeof(net->bssid) - 1);
+    net->bssid[sizeof(net->bssid) - 1] = '\0';
+    net->channel = (uint8_t)atoi(fields[4]);
+    strncpy(net->security, fields[5], sizeof(net->security) - 1);
+    net->security[sizeof(net->security) - 1] = '\0';
+    net->rssi = (int8_t)atoi(fields[6]);
+    strncpy(net->band, fields[7], sizeof(net->band) - 1);
+    net->band[sizeof(net->band) - 1] = '\0';
 
-    p = parse_quoted_field(p, net->bssid, sizeof(net->bssid));
-    if (!p) return false;
+    net->vendor[0] = '\0';
+    if (field_idx >= 3 && fields[2] && fields[2][0] != '\0') {
+        strncpy(net->vendor, fields[2], sizeof(net->vendor) - 1);
+        net->vendor[sizeof(net->vendor) - 1] = '\0';
+    } else if (field_idx >= 9 && fields[8] && fields[8][0] != '\0') {
+        strncpy(net->vendor, fields[8], sizeof(net->vendor) - 1);
+        net->vendor[sizeof(net->vendor) - 1] = '\0';
+    }
 
-    p = parse_quoted_field(p, field, sizeof(field));
-    if (!p) return false;
-    net->channel = (uint8_t)atoi(field);
-
-    p = parse_quoted_field(p, net->security, sizeof(net->security));
-    if (!p) return false;
-
-    p = parse_quoted_field(p, field, sizeof(field));
-    if (!p) return false;
-    net->rssi = (int8_t)atoi(field);
-
-    parse_quoted_field(p, net->band, sizeof(net->band));
-    net->selected = false;
+    net->mfp_capable = false;
+    net->mfp_known   = false;
+    net->uptime[0]   = '\0';
+    net->info_label  = NULL;
+    net->selected    = false;
     return true;
 }
 
@@ -103,6 +108,7 @@ static void stop_wifi_build_timer(void)
 static void on_back_to_home(lv_event_t *e)
 {
     (void)e;
+    wifi_inspect_cancel();
     uart_stop_collect();
     stop_wifi_build_timer();
     if (!ui_display_lock_wait()) {
@@ -124,6 +130,7 @@ static void on_checkbox_toggle(lv_event_t *e)
 static void on_next_pressed(lv_event_t *e)
 {
     (void)e;
+    wifi_inspect_cancel();
     int sel = 0;
     for (int i = 0; i < network_count; i++)
         if (networks[i].selected) sel++;
@@ -168,15 +175,22 @@ static void wifi_build_one_row(int i)
     lv_obj_set_style_text_color(name_lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(name_lbl, 200);
+    lv_obj_set_width(name_lbl, LV_PCT(100));
 
-    char info[64];
-    snprintf(info, sizeof(info), "%ddBm  ch%d  %s  %s",
-             net->rssi, net->channel, net->band, net->security);
+    char info[160];
+    if (net->vendor[0])
+        snprintf(info, sizeof(info), "%ddBm ch%d %s %s\nMFP ? | Up: ? | %s",
+                 net->rssi, net->channel, net->band, net->security, net->vendor);
+    else
+        snprintf(info, sizeof(info), "%ddBm ch%d %s %s\nMFP ? | Up: ?",
+                 net->rssi, net->channel, net->band, net->security);
     lv_obj_t *info_lbl = lv_label_create(col);
     lv_label_set_text(info_lbl, info);
     lv_obj_set_style_text_color(info_lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(info_lbl, &lv_font_montserrat_10, 0);
+    lv_label_set_long_mode(info_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(info_lbl, LV_PCT(100));
+    net->info_label = info_lbl;
 }
 
 static void wifi_build_step(lv_timer_t *t)
@@ -260,6 +274,7 @@ static void wifi_apply_scan_lvgl(void *unused)
 
     if (network_count > 0) {
         wifi_build_shell_and_start_timer();
+        wifi_inspect_start(networks, network_count);
     } else {
         lv_obj_t *scr = ui_screen_clear();
         ui_create_top_bar(scr, "WiFi Scan", on_back_to_home, NULL);

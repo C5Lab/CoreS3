@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "lvgl.h"
 
 #define MAX_NETWORKS 512
 
@@ -14,7 +15,12 @@ typedef struct {
     char     security[24];
     int8_t   rssi;
     char     band[8];
+    char     vendor[48];
+    bool     mfp_capable;
+    bool     mfp_known;
+    char     uptime[64];
     bool     selected;
+    lv_obj_t *info_label;
 } wifi_network_t;
 
 void show_wifi_scan_screen(void);

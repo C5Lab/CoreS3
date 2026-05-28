@@ -6,6 +6,7 @@
 #include "bluetooth_screen.h"
 #include "deauth_detector_screen.h"
 #include "subghz_screen.h"
+#include "device_info.h"
 #include "ui_helpers.h"
 #include "esp_log.h"
 
@@ -102,6 +103,8 @@ void show_home_screen(void)
     ui_create_tile(grid, LV_SYMBOL_DOWNLOAD,  "Compromised\nData",         UI_ACCENT_GREEN,          on_compromised,     NULL);
     ui_create_tile(grid, LV_SYMBOL_BLUETOOTH, "Bluetooth",                 UI_ACCENT_PURPLE,         on_bluetooth,       NULL);
     ui_create_tile(grid, LV_SYMBOL_CHARGE,    "Deauth\nDetector",          UI_ACCENT_CYAN,           on_deauth_detector, NULL);
-    ui_create_tile(grid, LV_SYMBOL_BARS,      "Sub-GHz",                   UI_ACCENT_PINK,           on_subghz,          NULL);
+    if (device_info_has_subghz()) {
+        ui_create_tile(grid, LV_SYMBOL_BARS,  "Sub-GHz",                   UI_ACCENT_PINK,           on_subghz,          NULL);
+    }
     ui_create_tile(grid, LV_SYMBOL_SETTINGS,  "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
 }

@@ -17,6 +17,7 @@
 #define NVS_KEY_BOOT_SOUND  "boot_sound"
 #define NVS_KEY_UART_PORT   "uart_port"
 #define NVS_KEY_SCREEN_OFF  "screen_off_s"
+#define NVS_KEY_RED_TEAM    "red_team"
 
 #define SCREEN_IDLE_POLL_MS           500
 
@@ -28,6 +29,7 @@ static const char *TAG = "ui_helpers";
 bool dark_mode_enabled = true;
 boot_sound_mode_t boot_sound_mode = BOOT_SOUND_NOKIA;
 uint16_t screen_off_timeout_s = 0;
+static bool red_team_enabled = false;
 
 static const uint16_t k_screen_timeout_sec[] = { 0, 30, 60, 120, 300, 600 };
 #define K_SCREEN_TIMEOUT_OPTS  (sizeof(k_screen_timeout_sec) / sizeof(k_screen_timeout_sec[0]))
@@ -386,6 +388,22 @@ void save_screen_timeout_to_nvs(uint16_t seconds)
     }
 }
 
+void save_red_team_to_nvs(bool enabled)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_RED_TEAM, enabled ? 1 : 0);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
+
+bool ui_red_team_enabled(void)
+{
+    return red_team_enabled;
+}
+
 void load_settings_from_nvs(void)
 {
     nvs_handle_t nvs;
@@ -425,6 +443,12 @@ void load_settings_from_nvs(void)
         }
     }
 
+    uint8_t rt = 0;
+    err = nvs_get_u8(nvs, NVS_KEY_RED_TEAM, &rt);
+    if (err == ESP_OK) {
+        red_team_enabled = (rt != 0);
+    }
+
     nvs_close(nvs);
 }
 
@@ -446,6 +470,17 @@ static void on_dark_mode_toggle(lv_event_t *e)
 
     dark_mode_enabled = enabled;
     save_dark_mode_to_nvs(dark_mode_enabled);
+    show_settings_screen();
+}
+
+static void on_red_team_toggle(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (red_team_enabled == enabled) return;
+
+    red_team_enabled = enabled;
+    save_red_team_to_nvs(red_team_enabled);
     show_settings_screen();
 }
 
@@ -619,6 +654,20 @@ void show_settings_screen(void)
     lv_obj_set_style_bg_color(sw, ui_muted_color(), 0);
     lv_obj_set_style_bg_color(sw, UI_ACCENT_BLUE, LV_STATE_CHECKED | LV_PART_INDICATOR);
     lv_obj_add_event_cb(sw, on_dark_mode_toggle, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Red Team row */
+    lv_obj_t *rt_row = create_settings_row(cont);
+
+    lv_obj_t *rt_lbl = lv_label_create(rt_row);
+    lv_label_set_text(rt_lbl, "Red Team mode");
+    lv_obj_set_style_text_color(rt_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(rt_lbl, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *rt_sw = lv_switch_create(rt_row);
+    if (red_team_enabled) lv_obj_add_state(rt_sw, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(rt_sw, ui_muted_color(), 0);
+    lv_obj_set_style_bg_color(rt_sw, UI_ACCENT_RED, LV_STATE_CHECKED | LV_PART_INDICATOR);
+    lv_obj_add_event_cb(rt_sw, on_red_team_toggle, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* Boot sound row */
     lv_obj_t *sound_row = create_settings_row(cont);

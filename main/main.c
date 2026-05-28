@@ -156,20 +156,16 @@ static void play_startup_beep(void *arg)
 /*  Splash screen                                                      */
 /* ------------------------------------------------------------------ */
 
-static void detection_complete_cb(lv_timer_t *timer)
+/* Runs in the LVGL task (via ui_lvgl_async_call) once the firmware probe is
+ * done. Safe to touch LVGL objects here. */
+static void boot_finalize_cb(void *arg)
 {
-    (void)timer;
+    (void)arg;
 
     if (splash_timer) {
         lv_timer_del(splash_timer);
         splash_timer = NULL;
     }
-
-    /* Probe firmware for board_name now that ESP32C5 has had ~3 s to boot
-     * and the boot melody is essentially finished. Splash is still visible
-     * during the up-to-500ms blocking wait, so there is no visible black gap. */
-    device_info_init();
-
     if (splash_screen) {
         lv_obj_del(splash_screen);
         splash_screen = NULL;
@@ -179,6 +175,26 @@ static void detection_complete_cb(lv_timer_t *timer)
 
     show_home_screen();
     ESP_LOGI(TAG, "Splash done, home screen shown");
+}
+
+/* Blocking firmware probe must NOT run in the LVGL task: it would hold the
+ * display mutex for the whole UART round-trip and run on the constrained LVGL
+ * stack. Do it on a dedicated task, then hand control back to LVGL. */
+static void boot_probe_task(void *arg)
+{
+    (void)arg;
+    device_info_init();
+    ui_lvgl_async_call(boot_finalize_cb, NULL);
+    vTaskDelete(NULL);
+}
+
+static void detection_complete_cb(lv_timer_t *timer)
+{
+    (void)timer;
+
+    /* The splash + its animation stay alive while the probe runs in the
+     * background, so there is no visible black gap. */
+    xTaskCreate(boot_probe_task, "boot_probe", 8192, NULL, 5, NULL);
 }
 
 static void splash_timer_cb(lv_timer_t *timer)
