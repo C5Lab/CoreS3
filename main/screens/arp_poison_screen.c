@@ -5,6 +5,8 @@
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -104,12 +106,37 @@ static void show_host_list(void)
     }
 }
 
+static void hosts_done_lvgl_cb(void *arg)
+{
+    (void)arg;
+    if (s_host_count > 0) {
+        show_host_list();
+    } else {
+        lv_obj_t *scr = ui_screen_clear();
+        s_status_lbl = NULL;
+        ui_create_top_bar(scr, "ARP Poison", on_back, NULL);
+        lv_obj_t *msg = lv_label_create(scr);
+        lv_label_set_text(msg, "No hosts found.");
+        lv_obj_center(msg);
+    }
+}
+
+static void hosts_collect_task(void *arg)
+{
+    (void)arg;
+    s_host_count = wifi_collect_list_hosts(s_hosts, WIFI_MAX_HOSTS, 1500);
+    if (!ui_lvgl_async_call(hosts_done_lvgl_cb, NULL))
+        hosts_done_lvgl_cb(NULL);
+    vTaskDelete(NULL);
+}
+
 static void on_connect_done(bool success, void *unused)
 {
     (void)unused;
     if (!success) {
         if (ui_display_lock_wait()) {
             lv_obj_t *scr = ui_screen_clear();
+            s_status_lbl = NULL;
             ui_create_top_bar(scr, "ARP Poison", on_back, NULL);
             lv_obj_t *msg = lv_label_create(scr);
             lv_label_set_text(msg, "WiFi connect failed.");
@@ -120,19 +147,13 @@ static void on_connect_done(bool success, void *unused)
         return;
     }
 
-    s_host_count = wifi_collect_list_hosts(s_hosts, WIFI_MAX_HOSTS, 800);
     if (ui_display_lock_wait()) {
-        if (s_host_count > 0)
-            show_host_list();
-        else {
-            lv_obj_t *scr = ui_screen_clear();
-            ui_create_top_bar(scr, "ARP Poison", on_back, NULL);
-            lv_obj_t *msg = lv_label_create(scr);
-            lv_label_set_text(msg, "No hosts found.");
-            lv_obj_center(msg);
-        }
+        if (s_status_lbl && lv_obj_is_valid(s_status_lbl))
+            lv_label_set_text(s_status_lbl, "Connected. Listing hosts...");
         ui_display_unlock_safe();
     }
+
+    xTaskCreate(hosts_collect_task, "arp_hosts", 4096, NULL, 5, NULL);
 }
 
 static void on_password_confirm(const char *text, void *unused)
@@ -142,9 +163,9 @@ static void on_password_confirm(const char *text, void *unused)
         snprintf(s_password, sizeof(s_password), "%s", text);
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "ARP Poison", on_back, NULL);
-    lv_obj_t *lbl = lv_label_create(scr);
-    lv_label_set_text(lbl, "Connecting...");
-    lv_obj_center(lbl);
+    s_status_lbl = lv_label_create(scr);
+    lv_label_set_text(s_status_lbl, "Connecting...");
+    lv_obj_center(s_status_lbl);
     wifi_connect_async(&s_net, s_password[0] ? s_password : NULL,
                        on_connect_done, NULL);
 }
@@ -154,9 +175,9 @@ static void begin_connect(void)
     if (wifi_network_is_open(&s_net)) {
         lv_obj_t *scr = ui_screen_clear();
         ui_create_top_bar(scr, "ARP Poison", on_back, NULL);
-        lv_obj_t *lbl = lv_label_create(scr);
-        lv_label_set_text(lbl, "Connecting...");
-        lv_obj_center(lbl);
+        s_status_lbl = lv_label_create(scr);
+        lv_label_set_text(s_status_lbl, "Connecting...");
+        lv_obj_center(s_status_lbl);
         wifi_connect_async(&s_net, NULL, on_connect_done, NULL);
         return;
     }
@@ -166,9 +187,9 @@ static void begin_connect(void)
         snprintf(s_password, sizeof(s_password), "%s", evil_pass);
         lv_obj_t *scr = ui_screen_clear();
         ui_create_top_bar(scr, "ARP Poison", on_back, NULL);
-        lv_obj_t *lbl = lv_label_create(scr);
-        lv_label_set_text(lbl, "Connecting...");
-        lv_obj_center(lbl);
+        s_status_lbl = lv_label_create(scr);
+        lv_label_set_text(s_status_lbl, "Connecting...");
+        lv_obj_center(s_status_lbl);
         wifi_connect_async(&s_net, s_password, on_connect_done, NULL);
         return;
     }

@@ -49,7 +49,10 @@ static void evil_lookup_line_cb(const char *line)
 static void connect_line_cb(const char *line)
 {
     if (!line || s_connect_result != 0) return;
-    if (strstr(line, "SUCCESS")) s_connect_result = 1;
+    /* Getting a DHCP lease unambiguously means we are connected; some firmware
+     * builds emit "DHCP IP: ..." without a separate "SUCCESS" token. */
+    if (strstr(line, "SUCCESS") || strstr(line, "DHCP IP"))
+        s_connect_result = 1;
     else if (strstr(line, "FAILED") || strstr(line, "TIMEOUT") ||
              strstr(line, "Error"))
         s_connect_result = -1;
@@ -215,12 +218,17 @@ int wifi_collect_list_hosts(lan_host_t *out, int max_hosts, int idle_timeout_ms)
     uart_handler_flush_rx();
     uart_send_command("list_hosts");
 
-    while (s_hosts.active) {
+    /* The firmware runs a subnet discovery sweep that can take several seconds
+     * before it prints the "Discovered Hosts" header, so allow a generous wall
+     * clock before giving up on the header. After the header arrives we only
+     * wait `idle_timeout_ms` past the last parsed host. */
+    const int header_timeout_ms = 30000;
+    int elapsed = 0;
+    while (s_hosts.active && elapsed < header_timeout_ms) {
         vTaskDelay(pdMS_TO_TICKS(50));
+        elapsed += 50;
         s_hosts.idle_ms += 50;
         if (s_hosts.got_header && s_hosts.idle_ms >= idle_timeout_ms)
-            break;
-        if (!s_hosts.got_header && s_hosts.idle_ms >= 3000)
             break;
     }
 
