@@ -36,6 +36,7 @@ typedef struct {
     char security[24];
     int  client_count;
     char clients[MAX_CLIENTS_PER_NET][18];
+    bool matched_this_poll;   /* claimed during current poll cycle */
 } obs_network_t;
 
 typedef struct {
@@ -102,6 +103,7 @@ static void show_html_picker(void);
 static void show_karma_running(void);
 static void start_poll_timer(int64_t interval);
 static void stop_all(void);
+static void on_scan_complete(const char **lines, int count);
 
 /* ================================================================== */
 /*  CSV parsing (scan_networks output)                                 */
@@ -232,10 +234,21 @@ static void poll_line_cb(const char *line)
     char ssid[33];
     int channel, cli_count;
     if (parse_sniffer_net_line(line, ssid, &channel, &cli_count)) {
-        /* match to existing network by SSID */
+        /* match to a distinct, not-yet-claimed network row so multiple APs
+           sharing an SSID (e.g. two "AX3" on CH108) map to separate rows */
         int matched = -1;
+        /* pass 1: same SSID and channel, not yet claimed this poll */
         for (int i = 0; i < obs_net_count; i++) {
-            if (strcmp(obs_nets[i].ssid, ssid) == 0) { matched = i; break; }
+            if (!obs_nets[i].matched_this_poll &&
+                obs_nets[i].channel == channel &&
+                strcmp(obs_nets[i].ssid, ssid) == 0) { matched = i; break; }
+        }
+        /* pass 2: same SSID, not yet claimed (channel may have changed) */
+        if (matched < 0) {
+            for (int i = 0; i < obs_net_count; i++) {
+                if (!obs_nets[i].matched_this_poll &&
+                    strcmp(obs_nets[i].ssid, ssid) == 0) { matched = i; break; }
+            }
         }
         if (matched < 0 &&
             psram_dynarr_ensure((void **)&obs_nets, &obs_nets_cap,
@@ -250,6 +263,7 @@ static void poll_line_cb(const char *line)
             obs_net_count++;
         }
         if (matched >= 0) {
+            obs_nets[matched].matched_this_poll = true;
             obs_nets[matched].channel = channel;
             obs_nets[matched].client_count = 0;
             memset(obs_nets[matched].clients, 0, sizeof(obs_nets[matched].clients));
@@ -282,6 +296,9 @@ static void poll_timer_cb(void *arg)
 
     poll_collecting = true;
     poll_parse_net = -1;
+
+    for (int i = 0; i < obs_net_count; i++)
+        obs_nets[i].matched_this_poll = false;
 
     ensure_timer(&line_timer, "obs_line", poll_done_cb);
     uart_set_line_callback(poll_line_cb);
@@ -342,10 +359,25 @@ static void on_back_home(lv_event_t *e)
 static void resume_sniffer(void)
 {
     focused_net_idx = -1;
-    deauth_active = false;
+    deauth_active   = false;
+    obs_running     = true;
+
+    uart_set_line_callback(NULL);
     uart_send_command("stop");
-    uart_send_command("unselect_networks");
-    uart_send_command("start_sniffer_noscan");
+
+    /* Fast path: reuse the firmware's existing scan results. If that store was
+     * lost (e.g. a previous full sniff/scan was aborted), the firmware replies
+     * "Please scan_networks first." -- in that case re-scan to self-heal. */
+    char resp[UART_MAX_LINE_LEN];
+    bool need_rescan = uart_send_wait_line("start_sniffer_noscan",
+                                           "scan_networks first",
+                                           resp, sizeof(resp), 1500);
+    if (need_rescan) {
+        uart_start_collect("Scan results printed", on_scan_complete);
+        uart_send_command("scan_networks");
+        return; /* on_scan_complete resumes sniffer + poll + main view */
+    }
+
     start_poll_timer(POLL_INTERVAL_US);
 }
 

@@ -7,6 +7,8 @@
 #include "led_indicator.h"
 #include "psram_dynarr.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <ctype.h>
 #include <string.h>
 #include <stdio.h>
@@ -40,7 +42,19 @@ static int           s_build_idx;
 static int           s_action_target_idx;
 static int           s_pending_delete_idx;
 
+/* ---- repeated transmit state ---- */
+static lv_obj_t      *s_tx_count_popup;
+static lv_obj_t      *s_tx_rollers[3];      /* hundreds, tens, ones */
+static volatile bool  s_tx_active;
+static TaskHandle_t   s_tx_task;
+static int            s_tx_target_idx;
+static int            s_tx_target_count;
+static char           s_tx_status_buf[64];
+static lv_color_t     s_tx_status_color;
+
 #define BUILD_ROWS_PER_TICK 6
+
+static const char *s_tx_digit_opts = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9";
 
 static void on_back(lv_event_t *e);
 static void build_list(void);
@@ -67,6 +81,11 @@ static void on_delete_confirmed(lv_event_t *e);
 static void on_delete_cancel(lv_event_t *e);
 static void do_delete(int idx);
 static void close_confirm_popup(void);
+static void show_tx_count_popup(int idx);
+static void close_tx_count_popup(void);
+static void on_tx_count_confirm(lv_event_t *e);
+static void on_tx_count_cancel(lv_event_t *e);
+static void tx_repeat_cancel(void);
 static bool s_text_input_open;
 static int  s_pending_rename_idx;
 
@@ -466,16 +485,222 @@ static void on_action_transmit(lv_event_t *e)
     close_action_popup();
     if (idx <= 0) return;
 
-    char cmd[32];
-    snprintf(cmd, sizeof(cmd), "subghz_tx %d sd", idx);
-    uart_send_command(cmd);
-    led_indicator_tx_pulse(1500);
+    /* Ask how many times to replay the signal. */
+    show_tx_count_popup(idx);
+}
 
-    if (s_status_lbl) {
-        lv_label_set_text_fmt(s_status_lbl, "Transmitted #%d", idx);
-        lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_GREEN, 0);
+/* ------------------------------------------------------------------ */
+/*  Repeated transmit: count roller popup + background TX loop         */
+/* ------------------------------------------------------------------ */
+
+/* Background task: replay `subghz_tx <idx> sd` count times, waiting for
+ * the firmware's [SUBGHZ_TX] completion line before sending the next one
+ * (uart_send_wait_line blocks until the marker arrives or times out). */
+static void tx_status_async(void *unused)
+{
+    (void)unused;
+    if (!s_status_lbl) return;
+    lv_label_set_text(s_status_lbl, s_tx_status_buf);
+    lv_obj_set_style_text_color(s_status_lbl, s_tx_status_color, 0);
+}
+
+static void set_tx_status(const char *msg, lv_color_t color)
+{
+    snprintf(s_tx_status_buf, sizeof(s_tx_status_buf), "%s", msg);
+    s_tx_status_color = color;
+    ui_lvgl_async_call(tx_status_async, NULL);
+}
+
+static void tx_repeat_task(void *arg)
+{
+    (void)arg;
+    int idx   = s_tx_target_idx;
+    int count = s_tx_target_count;
+
+    char cmd[32];
+    char line[128];
+    snprintf(cmd, sizeof(cmd), "subghz_tx %d sd", idx);
+
+    int done = 0;
+    for (int i = 0; s_tx_active && i < count; i++) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Transmitting %d/%d (#%d)...", i + 1, count, idx);
+        set_tx_status(msg, UI_ACCENT_ORANGE);
+
+        /* Wait for the previous TX to report done before sending the next. */
+        bool ok = uart_send_wait_line(cmd, "[SUBGHZ_TX]", line, sizeof(line), 4000);
+        if (!s_tx_active) break;
+
+        led_indicator_tx_pulse(600);
+        if (ok) {
+            done++;
+            ESP_LOGI(TAG, "TX %d/%d idx=%d ok", i + 1, count, idx);
+        } else {
+            ESP_LOGW(TAG, "TX %d/%d idx=%d no [SUBGHZ_TX] response", i + 1, count, idx);
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
-    ESP_LOGI(TAG, "Transmit idx=%d", idx);
+
+    if (s_tx_active) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "Transmitted #%d x%d", idx, done);
+        set_tx_status(msg, UI_ACCENT_GREEN);
+    }
+
+    s_tx_active = false;
+    s_tx_task   = NULL;
+    vTaskDelete(NULL);
+}
+
+static void tx_repeat_cancel(void)
+{
+    if (!s_tx_task && !s_tx_active) return;
+    s_tx_active = false;
+    /* The TX loop checks s_tx_active between sends; the in-flight
+     * uart_send_wait_line caps at 4 s, so wait long enough for it to
+     * finish the current iteration and self-delete. */
+    for (int w = 0; w < 500 && s_tx_task != NULL; w++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+static void close_tx_count_popup(void)
+{
+    if (s_tx_count_popup) {
+        lv_obj_delete(s_tx_count_popup);
+        s_tx_count_popup = NULL;
+    }
+    for (int i = 0; i < 3; i++) s_tx_rollers[i] = NULL;
+}
+
+static void on_tx_count_cancel(lv_event_t *e)
+{
+    (void)e;
+    close_tx_count_popup();
+}
+
+static void on_tx_count_confirm(lv_event_t *e)
+{
+    (void)e;
+    int idx = s_tx_target_idx;
+    if (idx <= 0) { close_tx_count_popup(); return; }
+
+    int h = s_tx_rollers[0] ? (int)lv_roller_get_selected(s_tx_rollers[0]) : 0;
+    int t = s_tx_rollers[1] ? (int)lv_roller_get_selected(s_tx_rollers[1]) : 0;
+    int o = s_tx_rollers[2] ? (int)lv_roller_get_selected(s_tx_rollers[2]) : 0;
+    int count = h * 100 + t * 10 + o;
+    if (count < 1) count = 1;
+
+    close_tx_count_popup();
+
+    /* Make sure no previous loop is still running. */
+    tx_repeat_cancel();
+
+    s_tx_target_idx   = idx;
+    s_tx_target_count = count;
+    s_tx_active       = true;
+
+    BaseType_t ok = xTaskCreate(tx_repeat_task, "subghz_tx_rep",
+                                4096, NULL, 4, &s_tx_task);
+    if (ok != pdPASS) {
+        s_tx_active = false;
+        s_tx_task   = NULL;
+        if (s_status_lbl) {
+            lv_label_set_text(s_status_lbl, "TX: task spawn failed");
+            lv_obj_set_style_text_color(s_status_lbl, UI_ACCENT_RED, 0);
+        }
+        ESP_LOGE(TAG, "failed to create tx_repeat_task");
+    }
+}
+
+static void style_tx_roller(lv_obj_t *r)
+{
+    lv_obj_set_width(r, 40);
+    lv_obj_set_style_bg_color(r, ui_card_color(), 0);
+    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(r, ui_text_color(), 0);
+    lv_obj_set_style_text_font(r, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(r, UI_ACCENT_CYAN, LV_PART_SELECTED);
+    lv_obj_set_style_bg_color(r, ui_panel_color(), LV_PART_SELECTED);
+    lv_obj_set_style_border_width(r, 0, 0);
+    lv_obj_set_style_radius(r, 6, 0);
+}
+
+static void show_tx_count_popup(int idx)
+{
+    if (idx <= 0) return;
+    close_tx_count_popup();
+
+    s_tx_target_idx = idx;
+
+    s_tx_count_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_tx_count_popup, 280, 200);
+    lv_obj_center(s_tx_count_popup);
+    style_popup_card(s_tx_count_popup, 10, UI_ACCENT_ORANGE);
+    lv_obj_set_flex_flow(s_tx_count_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_tx_count_popup, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(s_tx_count_popup, 10, 0);
+    lv_obj_set_style_pad_gap(s_tx_count_popup, 8, 0);
+    lv_obj_clear_flag(s_tx_count_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_tx_count_popup);
+    lv_label_set_text_fmt(title, "Transmit #%d - how many times?", idx);
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+
+    lv_obj_t *roller_row = lv_obj_create(s_tx_count_popup);
+    lv_obj_set_size(roller_row, LV_PCT(100), 80);
+    lv_obj_set_flex_flow(roller_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(roller_row, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(roller_row, 0, 0);
+    lv_obj_set_style_pad_gap(roller_row, 4, 0);
+    lv_obj_set_style_bg_opa(roller_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(roller_row, 0, 0);
+    lv_obj_clear_flag(roller_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < 3; i++) {
+        s_tx_rollers[i] = lv_roller_create(roller_row);
+        lv_roller_set_options(s_tx_rollers[i], s_tx_digit_opts,
+                              LV_ROLLER_MODE_INFINITE);
+        lv_roller_set_visible_row_count(s_tx_rollers[i], 3);
+        style_tx_roller(s_tx_rollers[i]);
+    }
+    /* default to 1 (ones digit) */
+    lv_roller_set_selected(s_tx_rollers[2], 1, LV_ANIM_OFF);
+
+    lv_obj_t *brow = lv_obj_create(s_tx_count_popup);
+    lv_obj_set_size(brow, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(brow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(brow, 0, 0);
+    lv_obj_set_style_pad_all(brow, 0, 0);
+    lv_obj_set_style_pad_gap(brow, 6, 0);
+    lv_obj_set_flex_flow(brow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(brow, LV_FLEX_ALIGN_SPACE_EVENLY,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(brow, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *tx = lv_btn_create(brow);
+    lv_obj_set_size(tx, 110, 32);
+    lv_obj_set_style_bg_color(tx, UI_ACCENT_ORANGE, 0);
+    lv_obj_set_style_radius(tx, 6, 0);
+    lv_obj_add_event_cb(tx, on_tx_count_confirm, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *txl = lv_label_create(tx);
+    lv_label_set_text(txl, "Transmit");
+    lv_obj_set_style_text_color(txl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(txl, &lv_font_montserrat_12, 0);
+    lv_obj_center(txl);
+
+    lv_obj_t *cn = lv_btn_create(brow);
+    lv_obj_set_size(cn, 110, 32);
+    lv_obj_set_style_bg_color(cn, ui_card_color(), 0);
+    lv_obj_set_style_radius(cn, 6, 0);
+    lv_obj_add_event_cb(cn, on_tx_count_cancel, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cnl = lv_label_create(cn);
+    lv_label_set_text(cnl, "Cancel");
+    lv_obj_set_style_text_color(cnl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(cnl, &lv_font_montserrat_12, 0);
+    lv_obj_center(cnl);
 }
 
 static void on_action_cancel(lv_event_t *e)
@@ -662,8 +887,10 @@ static void on_back(lv_event_t *e)
 {
     (void)e;
     uart_stop_collect();
+    tx_repeat_cancel();
     close_confirm_popup();
     close_action_popup();
+    close_tx_count_popup();
     stop_build_timer();
     if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
     s_pending_delete_idx = 0;
@@ -677,7 +904,7 @@ static void kb_poll_cb(lv_timer_t *t)
 {
     (void)t;
     /* While a popup owns the keyboard let it consume ESC etc. */
-    if (s_text_input_open || s_confirm_popup || s_action_popup) return;
+    if (s_text_input_open || s_confirm_popup || s_action_popup || s_tx_count_popup) return;
     uint8_t key = cardkb_read_key();
     if (key == 0) return;
     if (key == 0x1B || key == 0x08 || key == 0x7F)
@@ -699,6 +926,12 @@ void show_subghz_manage_screen(void)
     s_pending_delete_idx = 0;
     s_action_target_idx = 0;
     s_rename_feedback_pending = false;
+    s_tx_count_popup = NULL;
+    s_tx_active = false;
+    s_tx_task = NULL;
+    s_tx_target_idx = 0;
+    s_tx_target_count = 0;
+    for (int i = 0; i < 3; i++) s_tx_rollers[i] = NULL;
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "SD Signals", on_back, NULL);

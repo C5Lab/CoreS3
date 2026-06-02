@@ -32,9 +32,16 @@ static char et_password[64] = {0};
 static bool et_password_ok  = false;
 static bool et_shutdown     = false;
 
+/* array position (in wifi scan list) of the network chosen as the Evil Twin AP */
+static int et_primary_pos = -1;
+
 static lv_obj_t *et_status_lbl = NULL;
 
 /* ---- forward declarations ---- */
+static void show_et_network_picker(void);
+static void on_et_network_selected(lv_event_t *e);
+static void send_select_networks_with_primary(int primary_pos);
+static void show_sd_loading_screen(void);
 static void show_html_picker(void);
 static void show_running_screen(void);
 static void show_success_screen(void);
@@ -420,15 +427,35 @@ static void show_success_screen(void)
 }
 
 /* ================================================================== */
-/*  Entry point: called from attack_select_screen                     */
+/*  Phase 0: Evil Twin Network picker                                 */
+/*  Pick exactly one of the previously checkbox-selected networks as  */
+/*  the cloned AP. Its index is sent first in select_networks; the     */
+/*  rest of the selected networks follow (deauth targets).             */
 /* ================================================================== */
 
-void show_evil_twin_screen(void)
+/* Build select_networks with `primary_pos` first, then the remaining
+ * checkbox-selected networks, skipping the primary so indices are not
+ * duplicated. Indices are 1-based (nets[].index), same as elsewhere. */
+static void send_select_networks_with_primary(int primary_pos)
 {
-    /* Step 1: send select_networks */
-    send_select_networks();
+    int indices[MAX_NETWORKS];
+    int count = wifi_scan_get_selected(indices, MAX_NETWORKS);
+    wifi_network_t *nets = wifi_scan_get_networks();
+    if (!nets || primary_pos < 0) return;
 
-    /* Step 2: show loading screen while listing SD files */
+    char cmd[256] = "select_networks";
+    int pos = strlen(cmd);
+    pos += snprintf(cmd + pos, sizeof(cmd) - pos, " %d", nets[primary_pos].index);
+    for (int i = 0; i < count; i++) {
+        if (indices[i] == primary_pos) continue;   /* no duplicate */
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " %d", nets[indices[i]].index);
+    }
+    uart_send_command(cmd);
+}
+
+/* Loading screen shown while list_sd runs (shared with entry point). */
+static void show_sd_loading_screen(void)
+{
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Evil Twin", on_picker_back, NULL);
 
@@ -442,7 +469,92 @@ void show_evil_twin_screen(void)
     lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_align(lbl, LV_ALIGN_CENTER, 0, 45);
+}
 
-    /* Step 3: start listing SD card */
+static void on_et_network_selected(lv_event_t *e)
+{
+    et_primary_pos = (int)(intptr_t)lv_event_get_user_data(e);
+    wifi_network_t *nets = wifi_scan_get_networks();
+    if (nets)
+        ESP_LOGI(TAG, "Evil Twin AP: pos=%d index=%d ssid=%s",
+                 et_primary_pos, nets[et_primary_pos].index,
+                 nets[et_primary_pos].ssid);
+
+    /* primary first, others follow */
+    send_select_networks_with_primary(et_primary_pos);
+
+    /* proceed to the HTML portal picker (via list_sd) */
+    show_sd_loading_screen();
     start_list_sd();
+}
+
+static void show_et_network_picker(void)
+{
+    int indices[MAX_NETWORKS];
+    int count = wifi_scan_get_selected(indices, MAX_NETWORKS);
+    wifi_network_t *nets = wifi_scan_get_networks();
+
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "Evil Twin Network", on_picker_back, NULL);
+
+    if (count == 0 || !nets) {
+        lv_obj_t *lbl = lv_label_create(scr);
+        lv_label_set_text(lbl, "No networks selected.");
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_center(lbl);
+        return;
+    }
+
+    lv_obj_t *hint = lv_label_create(scr);
+    lv_label_set_text(hint, "Pick the network to clone:");
+    lv_obj_set_style_text_color(hint, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_10, 0);
+    lv_obj_set_pos(hint, 8, 38);
+
+    /* scrollable list of selected networks */
+    lv_obj_t *list = lv_obj_create(scr);
+    lv_obj_set_size(list, LV_PCT(100), 240 - 54);
+    lv_obj_set_pos(list, 0, 54);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 6, 0);
+    lv_obj_set_style_pad_row(list, 4, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+
+    for (int i = 0; i < count; i++) {
+        int net_pos = indices[i];
+        wifi_network_t *net = &nets[net_pos];
+
+        lv_obj_t *btn = lv_btn_create(list);
+        lv_obj_set_size(btn, LV_PCT(100), 34);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
+        lv_obj_set_style_bg_color(btn, UI_ACCENT_PURPLE, LV_STATE_PRESSED);
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_set_style_pad_hor(btn, 8, 0);
+        lv_obj_add_event_cb(btn, on_et_network_selected, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)net_pos);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        char display[80];
+        snprintf(display, sizeof(display), "%s  ch%d",
+                 net->ssid[0] ? net->ssid : "(hidden)", net->channel);
+        lv_label_set_text(lbl, display);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 0, 0);
+    }
+}
+
+/* ================================================================== */
+/*  Entry point: called from attack_select_screen                     */
+/* ================================================================== */
+
+void show_evil_twin_screen(void)
+{
+    et_primary_pos = -1;
+    /* Step 1: let the user choose which selected network to clone.
+     * select_networks is sent once that choice is made (with the chosen
+     * AP first), then the HTML portal picker follows. */
+    show_et_network_picker();
 }
