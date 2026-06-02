@@ -194,6 +194,10 @@ static void on_clients_back(lv_event_t *e)
 static void show_clients_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
+    /* ui_screen_clear() frees the sniffer screen's packet label; drop the
+     * dangling pointer so the packet-counter callback stays a no-op until
+     * show_sniffer_main() recreates it on Back. */
+    pkt_label = NULL;
     ui_create_top_bar(scr, "Clients", on_clients_back, NULL);
 
     lv_obj_t *list = lv_obj_create(scr);
