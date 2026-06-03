@@ -20,6 +20,7 @@ static const char *TAG = "bluetooth";
 static void show_bt_menu(void);
 static void show_airtag_scan(void);
 static void show_bt_locator_scanning(void);
+static void show_jammer_screen(void);
 
 /* ================================================================== */
 /*  Navigation                                                         */
@@ -601,6 +602,199 @@ static void show_bt_locator_scanning(void)
 }
 
 /* ================================================================== */
+/*  nRF24 Jammer                                                       */
+/* ================================================================== */
+
+static const char *k_jam_bands[5] = { "ble", "bt", "wifi", "drone", "all" };
+
+static int         s_jam_band = 0; /* default: ble */
+static bool        s_jamming;
+static lv_obj_t   *s_band_btns[5];
+static lv_obj_t   *s_big_btn;
+static lv_obj_t   *s_big_btn_lbl;
+static lv_obj_t   *s_jam_status_lbl;
+static lv_timer_t *s_jam_kb_timer;
+
+static void stop_jam_kb_timer(void)
+{
+    if (s_jam_kb_timer) {
+        lv_timer_del(s_jam_kb_timer);
+        s_jam_kb_timer = NULL;
+    }
+}
+
+static void jam_highlight_bands(void)
+{
+    for (int i = 0; i < 5; i++) {
+        if (!s_band_btns[i]) continue;
+        lv_obj_set_style_bg_color(s_band_btns[i],
+                                  i == s_jam_band ? UI_ACCENT_RED : ui_card_color(), 0);
+    }
+}
+
+static void on_jam_band(lv_event_t *e)
+{
+    if (s_jamming) return;
+    s_jam_band = (int)(intptr_t)lv_event_get_user_data(e);
+    jam_highlight_bands();
+}
+
+static void jam_set_bands_enabled(bool enabled)
+{
+    for (int i = 0; i < 5; i++) {
+        if (!s_band_btns[i]) continue;
+        if (enabled)
+            lv_obj_clear_state(s_band_btns[i], LV_STATE_DISABLED);
+        else
+            lv_obj_add_state(s_band_btns[i], LV_STATE_DISABLED);
+    }
+}
+
+static void jam_stop(void)
+{
+    if (!s_jamming) return;
+    s_jamming = false;
+    uart_send_command("stop");
+    ui_screen_low_power(false);
+
+    jam_set_bands_enabled(true);
+    if (s_big_btn)
+        lv_obj_set_style_bg_color(s_big_btn, UI_ACCENT_RED, 0);
+    if (s_big_btn_lbl)
+        lv_label_set_text(s_big_btn_lbl, LV_SYMBOL_PLAY " Start Jammer");
+    if (s_jam_status_lbl) {
+        lv_label_set_text(s_jam_status_lbl, "Idle");
+        lv_obj_set_style_text_color(s_jam_status_lbl, ui_muted_color(), 0);
+    }
+
+    ESP_LOGI(TAG, "Jammer stopped");
+}
+
+static void on_jam_big_btn(lv_event_t *e)
+{
+    (void)e;
+    if (s_jamming) {
+        jam_stop();
+        return;
+    }
+
+    s_jamming = true;
+
+    char cmd[32];
+    snprintf(cmd, sizeof(cmd), "start_jammer24 %s", k_jam_bands[s_jam_band]);
+    uart_send_command("init_nrf24");
+    uart_send_command(cmd);
+    ui_screen_low_power(true);
+
+    jam_set_bands_enabled(false);
+    if (s_big_btn)
+        lv_obj_set_style_bg_color(s_big_btn, lv_color_hex(0x8B0000), 0);
+    if (s_big_btn_lbl)
+        lv_label_set_text(s_big_btn_lbl, LV_SYMBOL_STOP " Stop Jammer");
+    if (s_jam_status_lbl) {
+        lv_label_set_text_fmt(s_jam_status_lbl, "Jamming %s...", k_jam_bands[s_jam_band]);
+        lv_obj_set_style_text_color(s_jam_status_lbl, UI_ACCENT_RED, 0);
+    }
+
+    ESP_LOGI(TAG, "Jammer started (band=%s)", k_jam_bands[s_jam_band]);
+}
+
+static void on_back_jammer(lv_event_t *e)
+{
+    (void)e;
+    stop_jam_kb_timer();
+    s_jamming = false;
+    ui_screen_low_power(false);
+    uart_set_line_callback(NULL);
+    uart_send_command("stop");
+    if (!ui_display_lock_wait()) return;
+    show_bt_menu();
+    ui_display_unlock_safe();
+}
+
+static void jam_kb_poll(lv_timer_t *t)
+{
+    (void)t;
+    uint8_t key = cardkb_read_key();
+    if (key == 0) return;
+    if (key == 0x1B || key == 0x08 || key == 0x7F)
+        on_back_jammer(NULL);
+}
+
+static void show_jammer_screen(void)
+{
+    s_jamming        = false;
+    s_big_btn        = NULL;
+    s_big_btn_lbl    = NULL;
+    s_jam_status_lbl = NULL;
+    for (int i = 0; i < 5; i++) s_band_btns[i] = NULL;
+
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "Jammer", on_back_jammer, NULL);
+
+    lv_obj_t *center = lv_obj_create(scr);
+    lv_obj_set_size(center, LV_PCT(100), 240 - 36);
+    lv_obj_set_pos(center, 0, 36);
+    lv_obj_set_style_bg_opa(center, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(center, 0, 0);
+    lv_obj_set_flex_flow(center, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(center, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(center, 10, 0);
+    lv_obj_clear_flag(center, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Band selector: 5 highlightable buttons (default 'all') */
+    lv_obj_t *bands = lv_obj_create(center);
+    lv_obj_set_size(bands, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(bands, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bands, 0, 0);
+    lv_obj_set_style_pad_all(bands, 0, 0);
+    lv_obj_set_flex_flow(bands, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(bands, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(bands, 6, 0);
+    lv_obj_set_style_pad_column(bands, 6, 0);
+    lv_obj_clear_flag(bands, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < 5; i++) {
+        lv_obj_t *btn = lv_btn_create(bands);
+        lv_obj_set_size(btn, 56, 32);
+        lv_obj_set_style_bg_color(btn, i == s_jam_band ? UI_ACCENT_RED : ui_card_color(), 0);
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_set_style_pad_all(btn, 0, 0);
+        lv_obj_add_event_cb(btn, on_jam_band, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        s_band_btns[i] = btn;
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, k_jam_bands[i]);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_center(lbl);
+    }
+
+    /* Big start/stop button */
+    s_big_btn = lv_btn_create(center);
+    lv_obj_set_size(s_big_btn, 180, 56);
+    lv_obj_set_style_bg_color(s_big_btn, UI_ACCENT_RED, 0);
+    lv_obj_set_style_radius(s_big_btn, 12, 0);
+    lv_obj_add_event_cb(s_big_btn, on_jam_big_btn, LV_EVENT_CLICKED, NULL);
+
+    s_big_btn_lbl = lv_label_create(s_big_btn);
+    lv_label_set_text(s_big_btn_lbl, LV_SYMBOL_PLAY " Start Jammer");
+    lv_obj_set_style_text_font(s_big_btn_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_center(s_big_btn_lbl);
+
+    s_jam_status_lbl = lv_label_create(center);
+    lv_label_set_text(s_jam_status_lbl, "Idle");
+    lv_obj_set_style_text_font(s_jam_status_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_jam_status_lbl, ui_muted_color(), 0);
+
+    s_jam_kb_timer = lv_timer_create(jam_kb_poll, 50, NULL);
+
+    ESP_LOGI(TAG, "Jammer screen ready");
+}
+
+/* ================================================================== */
 /*  BT Menu tiles                                                      */
 /* ================================================================== */
 
@@ -618,12 +812,20 @@ static void on_locator(lv_event_t *e)
     show_bt_locator_scanning();
 }
 
+static void on_jammer(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Jammer selected");
+    show_jammer_screen();
+}
+
 static void show_bt_menu(void)
 {
     stop_airtag_kb_timer();
     stop_locator_kb_timer();
     stop_track_kb_timer();
     stop_bt_build_timer();
+    stop_jam_kb_timer();
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Bluetooth", on_back_home, NULL);
@@ -643,6 +845,7 @@ static void show_bt_menu(void)
 
     ui_create_tile(grid, LV_SYMBOL_WIFI,      "AirTag\nScan",   UI_ACCENT_CYAN,   on_airtag,  NULL);
     ui_create_tile(grid, LV_SYMBOL_BLUETOOTH, "BT\nLocator",    UI_ACCENT_PURPLE, on_locator, NULL);
+    ui_create_tile(grid, LV_SYMBOL_WARNING,   "Jammer",         UI_ACCENT_RED,    on_jammer,  NULL);
 }
 
 /* ================================================================== */

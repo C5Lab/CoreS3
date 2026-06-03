@@ -38,6 +38,7 @@ static lv_timer_t *s_screen_idle_timer;
 static lv_obj_t *s_wake_blocker;
 static bool s_bl_asleep;
 static int s_saved_brightness = UI_DEFAULT_BRIGHTNESS;
+static bool s_idle_inhibit;
 
 /** Settings top bar; used to keep Back above dropdown lists / popups. Cleared on LV_EVENT_DELETE. */
 static lv_obj_t *s_settings_top_bar;
@@ -131,6 +132,15 @@ static uint16_t screen_timeout_dd_index_to_sec(uint32_t idx)
 static void screen_idle_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
+
+    if (s_idle_inhibit) {
+        if (s_bl_asleep) {
+            screen_wake_blocker_remove();
+            bsp_display_brightness_set(s_saved_brightness);
+            s_bl_asleep = false;
+        }
+        return;
+    }
 
     if (screen_off_timeout_s == 0) {
         if (s_bl_asleep) {
@@ -762,6 +772,30 @@ void ui_screen_timeout_init(void)
         return;
     }
     s_screen_idle_timer = lv_timer_create(screen_idle_timer_cb, SCREEN_IDLE_POLL_MS, NULL);
+}
+
+void ui_screen_idle_inhibit(bool inhibit)
+{
+    s_idle_inhibit = inhibit;
+    if (inhibit) {
+        if (s_bl_asleep) {
+            screen_wake_blocker_remove();
+            bsp_display_brightness_set(s_saved_brightness);
+            s_bl_asleep = false;
+        }
+        lv_display_trigger_activity(NULL);
+    }
+}
+
+void ui_screen_low_power(bool enable)
+{
+    if (enable) {
+        ui_screen_idle_inhibit(true);
+        bsp_display_brightness_set(UI_LOW_POWER_BRIGHTNESS);
+    } else {
+        bsp_display_brightness_set(UI_DEFAULT_BRIGHTNESS);
+        ui_screen_idle_inhibit(false);
+    }
 }
 
 bool ui_display_lock_wait(void)

@@ -9,6 +9,11 @@
 /** Default LCD brightness; keep in sync with first `bsp_display_brightness_set` in app_main. */
 #define UI_DEFAULT_BRIGHTNESS  80
 
+/** Reduced LCD brightness used during high-current RF ops (e.g. nRF24 jammer)
+ *  to free up power-rail headroom on shared-supply setups. Kept non-zero so
+ *  the on-screen Stop control stays visible. */
+#define UI_LOW_POWER_BRIGHTNESS  10
+
 /* ========== Dark palette ========== */
 #define COLOR_DARK_BG            lv_color_hex(0x050A14)
 #define COLOR_DARK_PANEL         lv_color_hex(0x091423)
@@ -112,6 +117,20 @@ bool ui_red_team_enabled(void);
 
 /** Start periodic check for screen idle (call after display + brightness init). */
 void ui_screen_timeout_init(void);
+
+/** While inhibited, the screen-off idle timeout is suspended (screen stays
+ *  awake). Use during long-running RF ops so the backlight never powers
+ *  down/up under load (avoids a brownout-inducing current spike). */
+void ui_screen_idle_inhibit(bool inhibit);
+
+/**
+ * Enter/leave display low-power mode for high-current RF operations.
+ * On enter: suspends the idle timeout and drops the LCD backlight to
+ * UI_LOW_POWER_BRIGHTNESS so the CoreS3 draws less from a shared power rail
+ * (mitigates nRF24-jammer brownouts). On leave: restores UI_DEFAULT_BRIGHTNESS
+ * and re-enables the idle timeout.
+ */
+void ui_screen_low_power(bool enable);
 
 /* ========== Settings screen ========== */
 void show_settings_screen(void);
