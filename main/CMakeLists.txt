@@ -12,6 +12,7 @@ idf_component_register(
         "device_info.c"
         "inspect_network.c"
         "wifi_connect_helper.c"
+        "gps_module.c"
         "led_indicator.c"
         "screens/home_screen.c"
         "screens/wifi_scan_screen.c"

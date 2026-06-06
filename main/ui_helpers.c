@@ -1,5 +1,6 @@
 #include "ui_helpers.h"
 #include "cardkb.h"
+#include "gps_module.h"
 #include "home_screen.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -18,6 +19,7 @@
 #define NVS_KEY_UART_PORT   "uart_port"
 #define NVS_KEY_SCREEN_OFF  "screen_off_s"
 #define NVS_KEY_RED_TEAM    "red_team"
+#define NVS_KEY_EXT_GPS     "ext_gps"
 
 #define SCREEN_IDLE_POLL_MS           500
 
@@ -29,6 +31,7 @@ static const char *TAG = "ui_helpers";
 bool dark_mode_enabled = true;
 boot_sound_mode_t boot_sound_mode = BOOT_SOUND_NOKIA;
 uint16_t screen_off_timeout_s = 0;
+bool external_gps_enabled = false;
 static bool red_team_enabled = false;
 
 static const uint16_t k_screen_timeout_sec[] = { 0, 30, 60, 120, 300, 600 };
@@ -409,6 +412,19 @@ void save_red_team_to_nvs(bool enabled)
     }
 }
 
+void save_external_gps_to_nvs(bool enabled)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_EXT_GPS, enabled ? 1 : 0);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    } else {
+        ESP_LOGW(TAG, "NVS open for write failed: %s", esp_err_to_name(err));
+    }
+}
+
 bool ui_red_team_enabled(void)
 {
     return red_team_enabled;
@@ -459,6 +475,12 @@ void load_settings_from_nvs(void)
         red_team_enabled = (rt != 0);
     }
 
+    uint8_t egps = 0;
+    err = nvs_get_u8(nvs, NVS_KEY_EXT_GPS, &egps);
+    if (err == ESP_OK) {
+        external_gps_enabled = (egps != 0);
+    }
+
     nvs_close(nvs);
 }
 
@@ -492,6 +514,77 @@ static void on_red_team_toggle(lv_event_t *e)
     red_team_enabled = enabled;
     save_red_team_to_nvs(red_team_enabled);
     show_settings_screen();
+}
+
+static void on_gps_warn_dismiss(lv_event_t *e)
+{
+    lv_obj_t *popup = lv_event_get_user_data(e);
+    if (popup) lv_obj_del(popup);
+}
+
+static void show_gps_portc_warning(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+
+    lv_obj_t *popup = lv_obj_create(scr);
+    lv_obj_set_size(popup, LV_PCT(80), LV_SIZE_CONTENT);
+    lv_obj_align(popup, LV_ALIGN_BOTTOM_MID, 0, -8);
+    style_popup_card(popup, 12, UI_ACCENT_ORANGE);
+    lv_obj_set_style_pad_all(popup, 16, 0);
+    lv_obj_set_flex_flow(popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(popup, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(popup, 12, 0);
+    lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *msg = lv_label_create(popup);
+    lv_label_set_text(msg,
+        "GPS not started: the C5 link is on Port C, which uses the same pins "
+        "(G17/G18) as the GPS module. Switch UART port to MBus, or move the "
+        "GPS DIP switch to another pin group.");
+    lv_obj_set_style_text_color(msg, ui_text_color(), 0);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, LV_PCT(100));
+
+    lv_obj_t *ok_btn = lv_btn_create(popup);
+    lv_obj_set_size(ok_btn, 120, 36);
+    lv_obj_set_style_bg_color(ok_btn, UI_ACCENT_ORANGE, 0);
+    lv_obj_set_style_radius(ok_btn, 8, 0);
+    lv_obj_add_event_cb(ok_btn, on_gps_warn_dismiss, LV_EVENT_CLICKED, popup);
+    lv_obj_t *olbl = lv_label_create(ok_btn);
+    lv_label_set_text(olbl, "OK");
+    lv_obj_set_style_text_color(olbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(olbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(olbl);
+
+    if (s_settings_top_bar) {
+        lv_obj_move_to_index(s_settings_top_bar, -1);
+    }
+}
+
+static void on_external_gps_toggle(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (external_gps_enabled == enabled) return;
+
+    if (enabled) {
+        if (uart_port_mode == UART_PORT_MODE_PORTC) {
+            /* Pin clash: keep the setting off and explain why. */
+            lv_obj_clear_state(sw, LV_STATE_CHECKED);
+            show_gps_portc_warning();
+            return;
+        }
+        external_gps_enabled = true;
+        save_external_gps_to_nvs(true);
+        gps_module_start();
+    } else {
+        external_gps_enabled = false;
+        save_external_gps_to_nvs(false);
+        gps_module_stop();
+    }
 }
 
 static void on_boot_sound_changed(lv_event_t *e)
@@ -678,6 +771,20 @@ void show_settings_screen(void)
     lv_obj_set_style_bg_color(rt_sw, ui_muted_color(), 0);
     lv_obj_set_style_bg_color(rt_sw, UI_ACCENT_RED, LV_STATE_CHECKED | LV_PART_INDICATOR);
     lv_obj_add_event_cb(rt_sw, on_red_team_toggle, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* External GPS row */
+    lv_obj_t *gps_row = create_settings_row(cont);
+
+    lv_obj_t *gps_lbl = lv_label_create(gps_row);
+    lv_label_set_text(gps_lbl, "External GPS (M5 v2.1)");
+    lv_obj_set_style_text_color(gps_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(gps_lbl, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *gps_sw = lv_switch_create(gps_row);
+    if (external_gps_enabled) lv_obj_add_state(gps_sw, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(gps_sw, ui_muted_color(), 0);
+    lv_obj_set_style_bg_color(gps_sw, UI_ACCENT_TEAL, LV_STATE_CHECKED | LV_PART_INDICATOR);
+    lv_obj_add_event_cb(gps_sw, on_external_gps_toggle, LV_EVENT_VALUE_CHANGED, NULL);
 
     /* Boot sound row */
     lv_obj_t *sound_row = create_settings_row(cont);

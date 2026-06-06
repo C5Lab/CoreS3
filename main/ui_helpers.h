@@ -63,6 +63,9 @@ extern boot_sound_mode_t boot_sound_mode;
 /** Seconds of LVGL inactivity before backlight off; 0 = never. */
 extern uint16_t screen_off_timeout_s;
 
+/** When true, CoreS3 reads the stacked M5 GPS v2.1 and pushes fixes to firmware. */
+extern bool external_gps_enabled;
+
 /* ========== Color accessor functions ========== */
 static inline lv_color_t ui_bg_color(void) {
     return dark_mode_enabled ? COLOR_DARK_BG : COLOR_LIGHT_BG;
@@ -108,6 +111,7 @@ lv_obj_t *ui_create_tile(lv_obj_t *parent, const char *icon,
 void save_dark_mode_to_nvs(bool enabled);
 void save_boot_sound_to_nvs(boot_sound_mode_t mode);
 void save_uart_port_to_nvs(uart_port_mode_t mode);
+void save_external_gps_to_nvs(bool enabled);
 void save_screen_timeout_to_nvs(uint16_t seconds);
 void save_red_team_to_nvs(bool enabled);
 void load_settings_from_nvs(void);

@@ -6,6 +6,7 @@
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
 #include "uart_handler.h"
+#include "gps_module.h"
 #include "parse_worker.h"
 #include "cardkb.h"
 #include "led_indicator.h"
@@ -302,6 +303,9 @@ void app_main(void)
 
     /* UART to ESP32C5 */
     uart_handler_init();
+
+    /* Optional stacked M5 GPS v2.1 reader (UART_NUM_2 on G17/G18) */
+    gps_module_init();
 
     /* M5GO Bottom3 LED strip (10x WS2812 on GPIO5) */
     led_indicator_init();
