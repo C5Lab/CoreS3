@@ -127,6 +127,7 @@ static lv_obj_t   *s_btn_raw;
 static lv_obj_t   *s_freq_popup;
 static lv_obj_t   *s_action_popup;
 static lv_obj_t   *s_leave_popup;
+static lv_obj_t   *s_info_popup;
 static lv_obj_t   *s_rollers[5];
 static signal_row_view_t s_row_pool[SIGNAL_ROW_POOL_SIZE];
 static lv_timer_t *s_kb_timer;
@@ -162,6 +163,8 @@ static bool merge_duplicate_signal(const subghz_signal_info_t *src);
 static void on_signal_row_clicked(lv_event_t *e);
 static void close_action_popup(void);
 static void close_leave_popup(void);
+static void close_info_popup(void);
+static void show_tx_blocked_popup(void);
 static void show_action_popup(const subghz_signal_t *sig);
 static void show_leave_popup(size_t count);
 static void set_status_message(const char *msg, lv_color_t color);
@@ -842,6 +845,7 @@ static void listen_teardown(void)
     close_freq_popup();
     close_action_popup();
     close_leave_popup();
+    close_info_popup();
     if (s_kb_timer) { lv_timer_delete(s_kb_timer); s_kb_timer = NULL; }
     if (s_ui_timer) { lv_timer_delete(s_ui_timer); s_ui_timer = NULL; }
     if (s_status_clear_timer) {
@@ -897,6 +901,7 @@ static void kb_poll_cb(lv_timer_t *t)
     uint8_t key = cardkb_read_key();
     if (key == 0) return;
     if (key == 0x1B || key == 0x08 || key == 0x7F) {
+        if (s_info_popup) { close_info_popup(); return; }
         if (s_leave_popup) { close_leave_popup(); return; }
         on_back(NULL);
     }
@@ -1012,6 +1017,61 @@ static void close_leave_popup(void)
     }
 }
 
+static void close_info_popup(void)
+{
+    if (s_info_popup) {
+        lv_obj_delete(s_info_popup);
+        s_info_popup = NULL;
+    }
+}
+
+static void on_info_ok(lv_event_t *e)
+{
+    (void)e;
+    close_info_popup();
+}
+
+static void show_tx_blocked_popup(void)
+{
+    close_info_popup();
+
+    s_info_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_info_popup, 290, 160);
+    lv_obj_center(s_info_popup);
+    style_popup_card(s_info_popup, 10, UI_ACCENT_ORANGE);
+    lv_obj_set_flex_flow(s_info_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_info_popup, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(s_info_popup, 10, 0);
+    lv_obj_set_style_pad_gap(s_info_popup, 8, 0);
+    lv_obj_clear_flag(s_info_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(s_info_popup);
+    lv_label_set_text(title, "Stop Listening");
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *body = lv_label_create(s_info_popup);
+    lv_obj_set_width(body, 270);
+    lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(body,
+        "Stop listening before transmitting, then try again.");
+    lv_obj_set_style_text_color(body, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(body, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t *ok_btn = lv_btn_create(s_info_popup);
+    lv_obj_set_size(ok_btn, 110, 32);
+    lv_obj_set_style_bg_color(ok_btn, UI_ACCENT_ORANGE, 0);
+    lv_obj_set_style_radius(ok_btn, 6, 0);
+    lv_obj_add_event_cb(ok_btn, on_info_ok, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ol = lv_label_create(ok_btn);
+    lv_label_set_text(ol, "OK");
+    lv_obj_set_style_text_color(ol, lv_color_white(), 0);
+    lv_obj_set_style_text_font(ol, &lv_font_montserrat_12, 0);
+    lv_obj_center(ol);
+}
+
 static void on_save_action(lv_event_t *e)
 {
     (void)e;
@@ -1034,6 +1094,11 @@ static void on_transmit_action(lv_event_t *e)
     int idx = s_pending_action_idx;
     close_action_popup();
     if (idx <= 0) return;
+
+    if (s_running) {
+        show_tx_blocked_popup();
+        return;
+    }
 
     char cmd[32];
     snprintf(cmd, sizeof(cmd), "subghz_tx %d mem", idx);
@@ -1264,6 +1329,7 @@ void show_subghz_listen_screen(void)
     s_freq_popup   = NULL;
     s_action_popup = NULL;
     s_leave_popup  = NULL;
+    s_info_popup   = NULL;
     s_kb_timer     = NULL;
     s_ui_timer     = NULL;
     s_status_clear_timer = NULL;
