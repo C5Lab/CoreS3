@@ -14,7 +14,10 @@ idf_component_register(
         "wifi_connect_helper.c"
         "gps_module.c"
         "led_indicator.c"
+        "ir_tx.c"
+        "ir_db.c"
         "screens/home_screen.c"
+        "screens/ir_remote_screen.c"
         "screens/wifi_scan_screen.c"
         "screens/attack_select_screen.c"
         "screens/arp_poison_screen.c"
@@ -55,6 +58,7 @@ idf_component_register(
         esp_driver_uart
         esp_driver_gpio
         esp_driver_i2c
+        esp_driver_rmt
         esp_timer
         nvs_flash
         esp_lvgl_port
@@ -62,6 +66,8 @@ idf_component_register(
         m5stack_core_s3
         lvgl__lvgl
         espressif__led_strip
+    EMBED_FILES
+        "assets/tv_power.irdb"
 )
 
 # Force inclusion of our LVGL custom-malloc backend so the linker pulls

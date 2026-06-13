@@ -6,6 +6,7 @@
 #include "bluetooth_screen.h"
 #include "deauth_detector_screen.h"
 #include "subghz_screen.h"
+#include "ir_remote_screen.h"
 #include "device_info.h"
 #include "ui_helpers.h"
 #include "esp_log.h"
@@ -63,6 +64,13 @@ static void on_subghz(lv_event_t *e)
     show_subghz_screen();
 }
 
+static void on_ir(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "IR TV Power");
+    show_ir_remote_screen();
+}
+
 static void on_settings(lv_event_t *e)
 {
     (void)e;
@@ -106,5 +114,6 @@ void show_home_screen(void)
     if (device_info_has_subghz()) {
         ui_create_tile(grid, LV_SYMBOL_BARS,  "Sub-GHz",                   UI_ACCENT_PINK,           on_subghz,          NULL);
     }
+    ui_create_tile(grid, LV_SYMBOL_VIDEO,     "IR TV\nPower",              UI_ACCENT_TEAL,           on_ir,              NULL);
     ui_create_tile(grid, LV_SYMBOL_SETTINGS,  "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
 }
