@@ -12,8 +12,6 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-static const char *TAG = "ap_radar";
-
 #define RADAR_RSSI_CENTER  -30
 #define RADAR_RSSI_EDGE    -90
 

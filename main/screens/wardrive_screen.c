@@ -1,5 +1,5 @@
 #include "wardrive_screen.h"
-#include "global_attacks_screen.h"
+#include "home_screen.h"
 #include "wifi_scan_screen.h"
 #include "wifi_connect_helper.h"
 #include "ui_helpers.h"
@@ -8,7 +8,11 @@
 #include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
@@ -57,10 +61,47 @@ static void wd_ring_push(const wd_network_t *net)
 /* ================================================================== */
 
 typedef enum {
-    WD_GPS_M5 = 0,
-    WD_GPS_ATGM,
-    WD_GPS_EXTERNAL,
+    WD_GPS_M5 = 0,   /* m5           */
+    WD_GPS_ATGM,     /* atgm         */
+    WD_GPS_EXTERNAL, /* external/tab5 (host pushes set_gps_position) */
+    WD_GPS_CAP,      /* cap / external_cap */
 } wd_gps_type_t;
+
+/* ------------------------------------------------------------------ */
+/*  Wardrive 2.0 configuration (mirrors JanOS get_wardrive_config /     */
+/*  set_wardrive_* commands; ported from the Tab5 setup screen).        */
+/* ------------------------------------------------------------------ */
+#define WD_BAND_WIFI24    0x01
+#define WD_BAND_WIFI5     0x02
+#define WD_BAND_BLE       0x04
+#define WD_CUSTOM_CH_MAX  96
+
+typedef enum {
+    WD_CH_POPULAR = 0,
+    WD_CH_ALL     = 1,
+    WD_CH_CUSTOM  = 2,
+} wd_channel_mode_t;
+
+typedef enum {
+    WD_ANTISURV_LOW  = 0,
+    WD_ANTISURV_MED  = 1,
+    WD_ANTISURV_HIGH = 2,
+} wd_antisurv_t;
+
+typedef struct {
+    uint8_t           bands;                          /* WD_BAND_* bitmask */
+    wd_channel_mode_t channel_mode;
+    char              custom_channels[WD_CUSTOM_CH_MAX]; /* e.g. "1:6:11:36" */
+    int               wifi_rssi_delta;                /* 0-50, 0 = log once */
+    int               ble_rssi_delta;                 /* 0-50 */
+    int               startup_cooldown;               /* 0-600 s */
+    int               mem_cap;                         /* 1000-200000 */
+    wd_antisurv_t     antisurv;
+    bool              loaded;                          /* populated from device */
+} wd_config_t;
+
+static const char *wd_memcap_options = "10000\n20000\n40000\n80000\n120000\n200000";
+static const int   wd_memcap_values[] = { 10000, 20000, 40000, 80000, 120000, 200000 };
 
 static bool          wd_running        = false;
 /* True once the *current* session's "Promiscuous wardrive started" was seen.
@@ -72,6 +113,11 @@ static bool          wd_trace_enabled  = true;   /* matches Tab5 default */
 static wd_gps_type_t wd_gps_type       = WD_GPS_M5;
 static bool          wd_use_external   = false;
 
+/* Live wardrive config + setup-overlay state. */
+static wd_config_t   wd_config;
+static bool          wd_setup_gps_dirty = false;   /* GPS dd changed by user */
+static volatile bool wd_setup_applying  = false;   /* apply worker running */
+
 static lv_obj_t *wd_list        = NULL;   /* scrollable network card list */
 static lv_obj_t *wd_status_lbl  = NULL;
 static lv_obj_t *wd_stats_lbl   = NULL;
@@ -81,13 +127,34 @@ static lv_obj_t *trace_btn      = NULL;
 static lv_obj_t *trace_lbl      = NULL;
 static lv_obj_t *gps_overlay    = NULL;
 static lv_obj_t *gps_overlay_lbl = NULL;
-static lv_obj_t *wd_local_gps_lbl = NULL;
+
+/* Setup overlay controls. */
+static lv_obj_t *wd_setup_overlay   = NULL;
+static lv_obj_t *wd_setup_trace_sw  = NULL;
+static lv_obj_t *wd_setup_gps_dd    = NULL;
+static lv_obj_t *wd_setup_band_cb[3] = { NULL, NULL, NULL };
+static lv_obj_t *wd_setup_channel_dd = NULL;
+static lv_obj_t *wd_setup_custom_btn = NULL;
+static lv_obj_t *wd_setup_custom_lbl = NULL;
+static lv_obj_t *wd_setup_wifi_slider = NULL, *wd_setup_wifi_val = NULL;
+static lv_obj_t *wd_setup_ble_slider  = NULL, *wd_setup_ble_val  = NULL;
+static lv_obj_t *wd_setup_cd_slider   = NULL, *wd_setup_cd_val   = NULL;
+static lv_obj_t *wd_setup_memcap_dd   = NULL;
+static lv_obj_t *wd_setup_antisurv_dd = NULL;
+static lv_obj_t *wd_setup_status      = NULL;
+static lv_obj_t *wd_setup_load_btn    = NULL;
+static lv_obj_t *wd_setup_apply_btn   = NULL;
+static lv_obj_t *wd_setup_close_btn   = NULL;
 
 static lv_timer_t *wd_gps_push_timer = NULL;
-static lv_timer_t *wd_local_gps_timer = NULL;
 
 /* forward decls */
-static void show_gps_type_popup(void);
+static void show_wardrive_setup(void);
+static void wd_setup_close(void);
+static void start_gps_push_timer(void);
+static void stop_gps_push_timer(void);
+static void set_status(const char *txt, lv_color_t color);
+static void update_trace_btn(void);
 static void wardrive_upload_btn_cb(lv_event_t *e);
 
 /* ================================================================== */
@@ -269,7 +336,7 @@ static void update_stats(void)
 {
     if (!wd_stats_lbl || !lv_obj_is_valid(wd_stats_lbl)) return;
     char buf[64];
-    snprintf(buf, sizeof(buf), "WiFi:%d  BT:%d  SAT:%d  %.2fkm",
+    snprintf(buf, sizeof(buf), "WiFi:%d BT:%d SAT:%d %.2fkm",
              wd_wifi_count, wd_bt_count, wd_sat_count, wd_distance_m / 1000.0);
     lv_label_set_text(wd_stats_lbl, buf);
 }
@@ -517,46 +584,6 @@ static void start_gps_push_timer(void)
     wd_gps_push_timer = lv_timer_create(gps_push_timer_cb, 300, NULL);
 }
 
-/* Local-module status line (independent of firmware), refreshed ~1 Hz. */
-static void local_gps_timer_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (!wd_local_gps_lbl || !lv_obj_is_valid(wd_local_gps_lbl)) return;
-
-    char buf[80];
-    if (!gps_module_is_running()) {
-        snprintf(buf, sizeof(buf), "GPS(local): off (enable in Settings)");
-        lv_obj_set_style_text_color(wd_local_gps_lbl, ui_muted_color(), 0);
-    } else {
-        double lat = 0, lon = 0;
-        int sats = 0;
-        if (gps_module_get_fix(&lat, &lon, NULL, &sats)) {
-            snprintf(buf, sizeof(buf), "GPS(local): %.5f,%.5f sat:%d @%d",
-                     lat, lon, sats, gps_module_get_baud());
-            lv_obj_set_style_text_color(wd_local_gps_lbl, UI_ACCENT_GREEN, 0);
-        } else {
-            snprintf(buf, sizeof(buf), "GPS(local): no fix (@%d, %u lines)",
-                     gps_module_get_baud(), gps_module_nmea_count());
-            lv_obj_set_style_text_color(wd_local_gps_lbl, UI_ACCENT_ORANGE, 0);
-        }
-    }
-    lv_label_set_text(wd_local_gps_lbl, buf);
-}
-
-static void start_local_gps_timer(void)
-{
-    if (wd_local_gps_timer) return;
-    wd_local_gps_timer = lv_timer_create(local_gps_timer_cb, 1000, NULL);
-}
-
-static void stop_local_gps_timer(void)
-{
-    if (wd_local_gps_timer) {
-        lv_timer_del(wd_local_gps_timer);
-        wd_local_gps_timer = NULL;
-    }
-}
-
 static void stop_gps_push_timer(void)
 {
     if (wd_gps_push_timer) {
@@ -643,114 +670,684 @@ static void on_trace(lv_event_t *e)
 static void on_gps_btn(lv_event_t *e)
 {
     (void)e;
-    show_gps_type_popup();
+    show_wardrive_setup();
 }
 
 static void on_back(lv_event_t *e)
 {
     (void)e;
+    if (wd_setup_applying) return;   /* don't leave while a worker task runs */
+    wd_setup_close();
     if (wd_running) wardrive_stop();
     stop_gps_push_timer();
-    stop_local_gps_timer();
     close_gps_overlay();
     wd_list = NULL;
     wd_status_lbl = NULL;
     wd_stats_lbl = NULL;
-    wd_local_gps_lbl = NULL;
     start_btn = NULL;
     stop_btn = NULL;
     trace_btn = NULL;
     trace_lbl = NULL;
 
     bsp_display_lock(0);
-    show_global_attacks_screen();
+    show_home_screen();
     bsp_display_unlock();
 }
 
 /* ================================================================== */
-/*  GPS type picker popup                                              */
+/*  Wardrive 2.0 setup overlay  (ported from Tab5 main.c)              */
 /* ================================================================== */
 
-static lv_obj_t *gps_popup = NULL;
-
-static void close_gps_popup(void)
+static void wd_config_set_defaults(wd_config_t *cfg)
 {
-    if (gps_popup) { lv_obj_del(gps_popup); gps_popup = NULL; }
+    if (!cfg) return;
+    cfg->bands            = WD_BAND_WIFI24 | WD_BAND_WIFI5 | WD_BAND_BLE;
+    cfg->channel_mode     = WD_CH_ALL;
+    cfg->custom_channels[0] = '\0';
+    cfg->wifi_rssi_delta  = 5;
+    cfg->ble_rssi_delta   = 15;
+    cfg->startup_cooldown = 0;
+    cfg->mem_cap          = 40000;
+    cfg->antisurv         = WD_ANTISURV_MED;
+    cfg->loaded           = false;
 }
 
-static void on_gps_type_pick(lv_event_t *e)
+static const char *wd_gps_cmd_for_type(wd_gps_type_t t)
 {
-    wd_gps_type_t type = (wd_gps_type_t)(intptr_t)lv_event_get_user_data(e);
-    wd_gps_type = type;
-
-    switch (type) {
-    case WD_GPS_M5:       uart_send_command("gps_set m5");       wd_use_external = false; break;
-    case WD_GPS_ATGM:     uart_send_command("gps_set atgm");     wd_use_external = false; break;
-    case WD_GPS_EXTERNAL: uart_send_command("gps_set external"); wd_use_external = true;  break;
+    switch (t) {
+    case WD_GPS_M5:   return "m5";
+    case WD_GPS_ATGM: return "atgm";
+    case WD_GPS_CAP:  return "cap";
+    default:          return "external";
     }
+}
 
-    if (wd_use_external) {
-        if (!gps_module_is_running()) {
-            set_status("Enable External GPS in Settings!", UI_ACCENT_ORANGE);
-        } else if (wd_running) {
-            start_gps_push_timer();
-        }
+static int wd_memcap_to_index(int memcap)
+{
+    int best = 2, best_diff = 1 << 30;   /* default 40000 */
+    for (int i = 0; i < (int)(sizeof(wd_memcap_values) / sizeof(int)); i++) {
+        int diff = abs(memcap - wd_memcap_values[i]);
+        if (diff < best_diff) { best_diff = diff; best = i; }
+    }
+    return best;
+}
+
+/* Send `cmd` and block until a line containing `ack` arrives. Worker-thread
+ * only (uart_send_wait_line blocks on a semaphore). */
+static bool wd_send_set(const char *cmd, const char *ack)
+{
+    char buf[192];
+    return uart_send_wait_line(cmd, ack, buf, sizeof(buf), 1500);
+}
+
+/* ---- Query the firmware's active GPS module ("gps_set" no args) ---- */
+static bool wd_load_gps_module(void)
+{
+    char resp[192];
+    if (!uart_send_wait_line("gps_set", "Current GPS module", resp, sizeof(resp), 1500))
+        return false;
+
+    if (strstr(resp, "M5Stack") || strstr(resp, "M5STACK")) {
+        wd_gps_type = WD_GPS_M5;
+    } else if (strstr(resp, "ATGM") || strstr(resp, "atgm")) {
+        wd_gps_type = WD_GPS_ATGM;
+    } else if (strstr(resp, "ExternalCap") || strstr(resp, "external_cap") ||
+               strstr(resp, "cap")) {
+        wd_gps_type = WD_GPS_CAP;
+    } else if (strstr(resp, "External") || strstr(resp, "external") ||
+               strstr(resp, "tab5")) {
+        wd_gps_type = WD_GPS_EXTERNAL;
     } else {
-        stop_gps_push_timer();
+        return false;
     }
-
-    close_gps_popup();
+    wd_setup_gps_dirty = false;
+    wd_use_external = (wd_gps_type == WD_GPS_EXTERNAL);
+    return true;
 }
 
-static void on_gps_popup_close(lv_event_t *e)
+/* ---- Load config via get_wardrive_config ([WDCFG] ... [WDCFG] END) ---- */
+static SemaphoreHandle_t wd_cfg_sem = NULL;
+static wd_config_t       wd_cfg_scratch;
+static volatile bool     wd_cfg_ok;
+
+static void wd_cfg_collect_cb(const char **lines, int count)
+{
+    wd_config_t cfg;
+    wd_config_set_defaults(&cfg);
+    bool any = false;
+
+    for (int i = 0; i < count; i++) {
+        const char *p = strstr(lines[i], "[WDCFG]");
+        if (!p) continue;
+        p += 7;                          /* strlen("[WDCFG]") */
+        while (*p == ' ') p++;
+        if (strncmp(p, "bands=", 6) == 0) {
+            cfg.bands = 0;
+            if (strstr(p, "wifi24")) cfg.bands |= WD_BAND_WIFI24;
+            if (strstr(p, "wifi5"))  cfg.bands |= WD_BAND_WIFI5;
+            if (strstr(p, "ble"))    cfg.bands |= WD_BAND_BLE;
+            any = true;
+        } else if (strncmp(p, "channels=", 9) == 0) {
+            const char *v = p + 9;
+            if (strncmp(v, "popular", 7) == 0)     cfg.channel_mode = WD_CH_POPULAR;
+            else if (strncmp(v, "custom", 6) == 0) cfg.channel_mode = WD_CH_CUSTOM;
+            else                                    cfg.channel_mode = WD_CH_ALL;
+        } else if (strncmp(p, "custom=", 7) == 0) {
+            snprintf(cfg.custom_channels, sizeof(cfg.custom_channels), "%s", p + 7);
+        } else if (strncmp(p, "wifi_rssi_delta=", 16) == 0) {
+            cfg.wifi_rssi_delta = atoi(p + 16);
+        } else if (strncmp(p, "ble_rssi_delta=", 15) == 0) {
+            cfg.ble_rssi_delta = atoi(p + 15);
+        } else if (strncmp(p, "startup_cooldown=", 17) == 0) {
+            cfg.startup_cooldown = atoi(p + 17);
+        } else if (strncmp(p, "mem_cap=", 8) == 0) {
+            cfg.mem_cap = atoi(p + 8);
+        } else if (strncmp(p, "antisurv_sensitivity=", 21) == 0) {
+            const char *v = p + 21;
+            if (strncmp(v, "low", 3) == 0)       cfg.antisurv = WD_ANTISURV_LOW;
+            else if (strncmp(v, "high", 4) == 0) cfg.antisurv = WD_ANTISURV_HIGH;
+            else                                  cfg.antisurv = WD_ANTISURV_MED;
+        }
+    }
+
+    if (any) { cfg.loaded = true; wd_cfg_scratch = cfg; }
+    wd_cfg_ok = any;
+    if (wd_cfg_sem) xSemaphoreGive(wd_cfg_sem);
+}
+
+static bool wd_load_config(void)
+{
+    if (!wd_cfg_sem) {
+        wd_cfg_sem = xSemaphoreCreateBinary();
+        if (!wd_cfg_sem) return false;
+    }
+    xSemaphoreTake(wd_cfg_sem, 0);       /* drain any stale signal */
+    wd_cfg_ok = false;
+    uart_start_collect("[WDCFG] END", wd_cfg_collect_cb);
+    uart_send_command("get_wardrive_config");
+    if (xSemaphoreTake(wd_cfg_sem, pdMS_TO_TICKS(3000)) != pdTRUE) {
+        uart_stop_collect();
+        return false;
+    }
+    if (wd_cfg_ok) wd_config = wd_cfg_scratch;
+    return wd_cfg_ok;
+}
+
+/* ---- Push current config values into the overlay controls (LVGL locked) ---- */
+static void wd_setup_sync_controls(void)
+{
+    if (!wd_setup_overlay || !lv_obj_is_valid(wd_setup_overlay)) return;
+    wd_config_t *cfg = &wd_config;
+
+    if (wd_setup_trace_sw) {
+        if (wd_trace_enabled) lv_obj_add_state(wd_setup_trace_sw, LV_STATE_CHECKED);
+        else                  lv_obj_clear_state(wd_setup_trace_sw, LV_STATE_CHECKED);
+    }
+    if (wd_setup_gps_dd) {
+        lv_dropdown_set_selected(wd_setup_gps_dd, (uint16_t)wd_gps_type);
+        wd_setup_gps_dirty = false;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (!wd_setup_band_cb[i]) continue;
+        uint8_t mask = (i == 0) ? WD_BAND_WIFI24 : (i == 1) ? WD_BAND_WIFI5 : WD_BAND_BLE;
+        if (cfg->bands & mask) lv_obj_add_state(wd_setup_band_cb[i], LV_STATE_CHECKED);
+        else                   lv_obj_clear_state(wd_setup_band_cb[i], LV_STATE_CHECKED);
+    }
+    if (wd_setup_channel_dd)
+        lv_dropdown_set_selected(wd_setup_channel_dd, (uint16_t)cfg->channel_mode);
+    if (wd_setup_custom_lbl)
+        lv_label_set_text_fmt(wd_setup_custom_lbl, "Custom: %s",
+                              cfg->custom_channels[0] ? cfg->custom_channels : "(none)");
+    if (wd_setup_custom_btn) {
+        if (cfg->channel_mode == WD_CH_CUSTOM)
+            lv_obj_clear_flag(wd_setup_custom_btn, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(wd_setup_custom_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (wd_setup_wifi_slider) {
+        lv_slider_set_value(wd_setup_wifi_slider, cfg->wifi_rssi_delta, LV_ANIM_OFF);
+        if (wd_setup_wifi_val)
+            lv_label_set_text_fmt(wd_setup_wifi_val, "%d dBm%s", cfg->wifi_rssi_delta,
+                                  cfg->wifi_rssi_delta == 0 ? " (once)" : "");
+    }
+    if (wd_setup_ble_slider) {
+        lv_slider_set_value(wd_setup_ble_slider, cfg->ble_rssi_delta, LV_ANIM_OFF);
+        if (wd_setup_ble_val)
+            lv_label_set_text_fmt(wd_setup_ble_val, "%d dBm%s", cfg->ble_rssi_delta,
+                                  cfg->ble_rssi_delta == 0 ? " (once)" : "");
+    }
+    if (wd_setup_cd_slider) {
+        lv_slider_set_value(wd_setup_cd_slider, cfg->startup_cooldown, LV_ANIM_OFF);
+        if (wd_setup_cd_val)
+            lv_label_set_text_fmt(wd_setup_cd_val, "%d s", cfg->startup_cooldown);
+    }
+    if (wd_setup_memcap_dd)
+        lv_dropdown_set_selected(wd_setup_memcap_dd, (uint16_t)wd_memcap_to_index(cfg->mem_cap));
+    if (wd_setup_antisurv_dd)
+        lv_dropdown_set_selected(wd_setup_antisurv_dd, (uint16_t)cfg->antisurv);
+}
+
+static void wd_setup_enable_buttons(bool enable)
+{
+    lv_obj_t *btns[] = { wd_setup_load_btn, wd_setup_apply_btn, wd_setup_close_btn };
+    for (int i = 0; i < 3; i++) {
+        if (!btns[i] || !lv_obj_is_valid(btns[i])) continue;
+        if (enable) lv_obj_clear_state(btns[i], LV_STATE_DISABLED);
+        else        lv_obj_add_state(btns[i], LV_STATE_DISABLED);
+    }
+}
+
+static void wd_setup_set_status(const char *txt, lv_color_t color)
+{
+    if (wd_setup_status && lv_obj_is_valid(wd_setup_status)) {
+        lv_label_set_text(wd_setup_status, txt);
+        lv_obj_set_style_text_color(wd_setup_status, color, 0);
+    }
+}
+
+/* ---- Load worker: query device, then refresh controls ---- */
+static void wd_setup_load_task(void *arg)
+{
+    (void)arg;
+    bool cfg_ok = wd_load_config();
+    bool gps_ok = wd_load_gps_module();
+
+    bsp_display_lock(0);
+    wd_setup_sync_controls();
+    if (cfg_ok && gps_ok)
+        wd_setup_set_status("Loaded config + GPS from device", UI_ACCENT_GREEN);
+    else if (cfg_ok)
+        wd_setup_set_status("Loaded config; GPS not reported", UI_ACCENT_ORANGE);
+    else if (gps_ok)
+        wd_setup_set_status("Loaded GPS; config not reported", UI_ACCENT_ORANGE);
+    else
+        wd_setup_set_status("No device response - local values", UI_ACCENT_RED);
+    wd_setup_enable_buttons(true);
+    bsp_display_unlock();
+
+    wd_setup_applying = false;
+    vTaskDelete(NULL);
+}
+
+/* ---- Apply worker: send every set_* command, waiting for each ACK ---- */
+static void wd_setup_apply_task(void *arg)
+{
+    (void)arg;
+    wd_config_t *cfg = &wd_config;
+    char cmd[192];
+    int  ok = 0, total = 0;
+    const bool apply_gps = wd_setup_gps_dirty;
+
+    if (apply_gps) {
+        snprintf(cmd, sizeof(cmd), "gps_set %s", wd_gps_cmd_for_type(wd_gps_type));
+        bsp_display_lock(0); wd_setup_set_status("Applying: GPS module", UI_ACCENT_ORANGE); bsp_display_unlock();
+        total++;
+        if (wd_send_set(cmd, "GPS module")) { ok++; wd_use_external = (wd_gps_type == WD_GPS_EXTERNAL); }
+    }
+
+    /* bands */
+    {
+        char list[48] = "";
+        if (cfg->bands & WD_BAND_WIFI24) strcat(list, "wifi24,");
+        if (cfg->bands & WD_BAND_WIFI5)  strcat(list, "wifi5,");
+        if (cfg->bands & WD_BAND_BLE)    strcat(list, "ble,");
+        size_t l = strlen(list);
+        if (l && list[l - 1] == ',') list[l - 1] = '\0';
+        snprintf(cmd, sizeof(cmd), "set_wardrive_bands %s", list);
+        bsp_display_lock(0); wd_setup_set_status("Applying: bands", UI_ACCENT_ORANGE); bsp_display_unlock();
+        total++; if (wd_send_set(cmd, "Wardrive bands")) ok++;
+    }
+    /* channels */
+    {
+        const char *mode = cfg->channel_mode == WD_CH_POPULAR ? "popular" :
+                           cfg->channel_mode == WD_CH_CUSTOM  ? "custom"  : "all";
+        if (cfg->channel_mode == WD_CH_CUSTOM && cfg->custom_channels[0])
+            snprintf(cmd, sizeof(cmd), "set_wardrive_channels custom %s", cfg->custom_channels);
+        else
+            snprintf(cmd, sizeof(cmd), "set_wardrive_channels %s", mode);
+        bsp_display_lock(0); wd_setup_set_status("Applying: channels", UI_ACCENT_ORANGE); bsp_display_unlock();
+        total++; if (wd_send_set(cmd, "Wardrive channels")) ok++;
+    }
+    /* rssi delta wifi / ble */
+    snprintf(cmd, sizeof(cmd), "set_wardrive_rssi_delta wifi %d", cfg->wifi_rssi_delta);
+    bsp_display_lock(0); wd_setup_set_status("Applying: WiFi RSSI delta", UI_ACCENT_ORANGE); bsp_display_unlock();
+    total++; if (wd_send_set(cmd, "Wardrive RSSI")) ok++;
+    snprintf(cmd, sizeof(cmd), "set_wardrive_rssi_delta ble %d", cfg->ble_rssi_delta);
+    bsp_display_lock(0); wd_setup_set_status("Applying: BLE RSSI delta", UI_ACCENT_ORANGE); bsp_display_unlock();
+    total++; if (wd_send_set(cmd, "Wardrive RSSI")) ok++;
+    /* memcap */
+    snprintf(cmd, sizeof(cmd), "set_wardrive_memcap %d", cfg->mem_cap);
+    bsp_display_lock(0); wd_setup_set_status("Applying: memory cap", UI_ACCENT_ORANGE); bsp_display_unlock();
+    total++; if (wd_send_set(cmd, "Wardrive memory")) ok++;
+    /* cooldown */
+    snprintf(cmd, sizeof(cmd), "set_wardrive_cooldown %d", cfg->startup_cooldown);
+    bsp_display_lock(0); wd_setup_set_status("Applying: startup cooldown", UI_ACCENT_ORANGE); bsp_display_unlock();
+    total++; if (wd_send_set(cmd, "Wardrive startup")) ok++;
+    /* antisurv */
+    {
+        const char *s = cfg->antisurv == WD_ANTISURV_LOW ? "low" :
+                        cfg->antisurv == WD_ANTISURV_HIGH ? "high" : "med";
+        snprintf(cmd, sizeof(cmd), "set_antisurv_sensitivity %s", s);
+        bsp_display_lock(0); wd_setup_set_status("Applying: anti-surv", UI_ACCENT_ORANGE); bsp_display_unlock();
+        total++; if (wd_send_set(cmd, "Anti-surveillance")) ok++;
+    }
+
+    cfg->loaded = true;
+    wd_setup_gps_dirty = false;
+
+    char done[64];
+    snprintf(done, sizeof(done), "Applied %d/%d settings (saved)", ok, total);
+    bsp_display_lock(0);
+    wd_setup_set_status(done, ok == total ? UI_ACCENT_GREEN : UI_ACCENT_ORANGE);
+    wd_setup_enable_buttons(true);
+    bsp_display_unlock();
+
+    wd_setup_applying = false;
+    vTaskDelete(NULL);
+}
+
+/* ---- Control callbacks ---- */
+static void wd_setup_trace_cb(lv_event_t *e)
 {
     (void)e;
-    close_gps_popup();
+    if (wd_setup_trace_sw)
+        wd_trace_enabled = lv_obj_has_state(wd_setup_trace_sw, LV_STATE_CHECKED);
+    update_trace_btn();
 }
 
-static void show_gps_type_popup(void)
+static void wd_setup_gps_dd_cb(lv_event_t *e)
 {
-    if (gps_popup) return;
+    (void)e;
+    if (!wd_setup_gps_dd) return;
+    wd_gps_type = (wd_gps_type_t)lv_dropdown_get_selected(wd_setup_gps_dd);
+    wd_setup_gps_dirty = true;
+    wd_use_external = (wd_gps_type == WD_GPS_EXTERNAL);
+    if (wd_use_external && !gps_module_is_running())
+        set_status("Enable External GPS in Settings!", UI_ACCENT_ORANGE);
+}
+
+static void wd_setup_channel_dd_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wd_setup_channel_dd || !wd_setup_custom_btn) return;
+    if (lv_dropdown_get_selected(wd_setup_channel_dd) == WD_CH_CUSTOM)
+        lv_obj_clear_flag(wd_setup_custom_btn, LV_OBJ_FLAG_HIDDEN);
+    else
+        lv_obj_add_flag(wd_setup_custom_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void wd_setup_wifi_slider_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wd_setup_wifi_slider || !wd_setup_wifi_val) return;
+    int v = lv_slider_get_value(wd_setup_wifi_slider);
+    lv_label_set_text_fmt(wd_setup_wifi_val, "%d dBm%s", v, v == 0 ? " (once)" : "");
+}
+
+static void wd_setup_ble_slider_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wd_setup_ble_slider || !wd_setup_ble_val) return;
+    int v = lv_slider_get_value(wd_setup_ble_slider);
+    lv_label_set_text_fmt(wd_setup_ble_val, "%d dBm%s", v, v == 0 ? " (once)" : "");
+}
+
+static void wd_setup_cd_slider_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wd_setup_cd_slider || !wd_setup_cd_val) return;
+    int v = lv_slider_get_value(wd_setup_cd_slider);
+    lv_label_set_text_fmt(wd_setup_cd_val, "%d s", v);
+}
+
+static void wd_custom_ch_confirm(const char *text, void *ud)
+{
+    (void)ud;
+    snprintf(wd_config.custom_channels, sizeof(wd_config.custom_channels), "%s", text ? text : "");
+    if (wd_setup_custom_lbl && lv_obj_is_valid(wd_setup_custom_lbl))
+        lv_label_set_text_fmt(wd_setup_custom_lbl, "Custom: %s",
+                              wd_config.custom_channels[0] ? wd_config.custom_channels : "(none)");
+}
+
+static void wd_setup_custom_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    ui_show_text_input_popup("Custom channels", wd_config.custom_channels,
+                             sizeof(wd_config.custom_channels) - 1, UI_ACCENT_TEAL,
+                             wd_custom_ch_confirm, NULL, NULL);
+}
+
+static void wd_setup_close(void)
+{
+    if (wd_setup_applying) return;   /* never tear down while a worker runs */
+    if (wd_setup_overlay) {
+        lv_obj_del(wd_setup_overlay);
+        wd_setup_overlay = NULL;
+    }
+    wd_setup_trace_sw = wd_setup_gps_dd = wd_setup_channel_dd = NULL;
+    wd_setup_band_cb[0] = wd_setup_band_cb[1] = wd_setup_band_cb[2] = NULL;
+    wd_setup_custom_btn = wd_setup_custom_lbl = NULL;
+    wd_setup_wifi_slider = wd_setup_wifi_val = NULL;
+    wd_setup_ble_slider = wd_setup_ble_val = NULL;
+    wd_setup_cd_slider = wd_setup_cd_val = NULL;
+    wd_setup_memcap_dd = wd_setup_antisurv_dd = NULL;
+    wd_setup_status = NULL;
+    wd_setup_load_btn = wd_setup_apply_btn = wd_setup_close_btn = NULL;
+}
+
+static void wd_setup_close_cb(lv_event_t *e)
+{
+    (void)e;
+    wd_setup_close();
+}
+
+static void wd_setup_load_cb(lv_event_t *e)
+{
+    (void)e;
+    if (wd_setup_applying) return;
+    wd_setup_applying = true;
+    wd_setup_enable_buttons(false);
+    wd_setup_set_status("Reading device config...", UI_ACCENT_ORANGE);
+    xTaskCreate(wd_setup_load_task, "wd_load", 8192, NULL, 5, NULL);
+}
+
+static void wd_setup_apply_cb(lv_event_t *e)
+{
+    (void)e;
+    if (wd_setup_applying) return;
+    wd_config_t *cfg = &wd_config;
+
+    /* gather from controls (LVGL thread) */
+    uint8_t bands = 0;
+    if (lv_obj_has_state(wd_setup_band_cb[0], LV_STATE_CHECKED)) bands |= WD_BAND_WIFI24;
+    if (lv_obj_has_state(wd_setup_band_cb[1], LV_STATE_CHECKED)) bands |= WD_BAND_WIFI5;
+    if (lv_obj_has_state(wd_setup_band_cb[2], LV_STATE_CHECKED)) bands |= WD_BAND_BLE;
+    if (bands == 0) {
+        wd_setup_set_status("Select at least one band", UI_ACCENT_RED);
+        return;
+    }
+    cfg->bands            = bands;
+    cfg->channel_mode     = (wd_channel_mode_t)lv_dropdown_get_selected(wd_setup_channel_dd);
+    cfg->wifi_rssi_delta  = lv_slider_get_value(wd_setup_wifi_slider);
+    cfg->ble_rssi_delta   = lv_slider_get_value(wd_setup_ble_slider);
+    cfg->startup_cooldown = lv_slider_get_value(wd_setup_cd_slider);
+    cfg->mem_cap          = wd_memcap_values[lv_dropdown_get_selected(wd_setup_memcap_dd)];
+    cfg->antisurv         = (wd_antisurv_t)lv_dropdown_get_selected(wd_setup_antisurv_dd);
+    if (wd_setup_gps_dd && wd_setup_gps_dirty)
+        wd_gps_type = (wd_gps_type_t)lv_dropdown_get_selected(wd_setup_gps_dd);
+
+    wd_setup_applying = true;
+    wd_setup_enable_buttons(false);
+    wd_setup_set_status("Applying...", UI_ACCENT_ORANGE);
+    xTaskCreate(wd_setup_apply_task, "wd_apply", 8192, NULL, 5, NULL);
+}
+
+/* ---- small builders ---- */
+static lv_obj_t *wd_setup_row(lv_obj_t *parent)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    return row;
+}
+
+static lv_obj_t *wd_setup_label(lv_obj_t *parent, const char *text, lv_color_t color)
+{
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_color(lbl, color, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    return lbl;
+}
+
+static void show_wardrive_setup(void)
+{
+    if (wd_running) {          /* config is start-time only */
+        set_status("Stop wardrive before setup", UI_ACCENT_ORANGE);
+        return;
+    }
+    if (wd_setup_overlay) return;
+    if (!wd_config.loaded) wd_config_set_defaults(&wd_config);
+
     lv_obj_t *scr = lv_scr_act();
 
-    gps_popup = lv_obj_create(scr);
-    lv_obj_set_size(gps_popup, 260, LV_SIZE_CONTENT);
-    lv_obj_center(gps_popup);
-    style_popup_card(gps_popup, 12, UI_ACCENT_TEAL);
-    lv_obj_set_style_pad_all(gps_popup, 14, 0);
-    lv_obj_set_flex_flow(gps_popup, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(gps_popup, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(gps_popup, 8, 0);
-    lv_obj_clear_flag(gps_popup, LV_OBJ_FLAG_SCROLLABLE);
+    wd_setup_overlay = lv_obj_create(scr);
+    lv_obj_remove_style_all(wd_setup_overlay);
+    lv_obj_set_size(wd_setup_overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(wd_setup_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(wd_setup_overlay, LV_OPA_70, 0);
+    lv_obj_clear_flag(wd_setup_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(wd_setup_overlay, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_t *title = lv_label_create(gps_popup);
-    lv_label_set_text(title, "GPS Source");
-    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_t *popup = lv_obj_create(wd_setup_overlay);
+    lv_obj_set_size(popup, 300, 224);
+    lv_obj_center(popup);
+    lv_obj_set_style_bg_color(popup, ui_card_color(), 0);
+    lv_obj_set_style_bg_opa(popup, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(popup, UI_ACCENT_TEAL, 0);
+    lv_obj_set_style_border_width(popup, 2, 0);
+    lv_obj_set_style_radius(popup, 12, 0);
+    lv_obj_set_style_pad_all(popup, 10, 0);
+    lv_obj_set_flex_flow(popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(popup, 6, 0);
+    lv_obj_set_scroll_dir(popup, LV_DIR_VER);
+
+    lv_obj_t *title = lv_label_create(popup);
+    lv_label_set_text(title, LV_SYMBOL_SETTINGS " Wardrive Setup");
+    lv_obj_set_style_text_color(title, UI_ACCENT_TEAL, 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
 
-    const char *labels[] = { "M5 GPS", "ATGM336H", "External (M5 v2.1)" };
+    /* Trace (KML track) */
+    lv_obj_t *trace_row = wd_setup_row(popup);
+    wd_setup_label(trace_row, "Trace (KML track)", UI_ACCENT_CYAN);
+    wd_setup_trace_sw = lv_switch_create(trace_row);
+    lv_obj_add_event_cb(wd_setup_trace_sw, wd_setup_trace_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* GPS module */
+    lv_obj_t *gps_row = wd_setup_row(popup);
+    wd_setup_label(gps_row, "GPS module", UI_ACCENT_CYAN);
+    wd_setup_gps_dd = lv_dropdown_create(gps_row);
+    lv_dropdown_set_options(wd_setup_gps_dd, "m5\natgm\nexternal\ncap");
+    lv_dropdown_set_selected(wd_setup_gps_dd, (uint16_t)wd_gps_type);
+    lv_obj_set_width(wd_setup_gps_dd, 150);
+    lv_obj_add_event_cb(wd_setup_gps_dd, wd_setup_gps_dd_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Bands */
+    wd_setup_label(popup, "Bands", UI_ACCENT_CYAN);
+    lv_obj_t *band_row = lv_obj_create(popup);
+    lv_obj_set_size(band_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(band_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(band_row, 0, 0);
+    lv_obj_set_style_pad_all(band_row, 0, 0);
+    lv_obj_set_flex_flow(band_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(band_row, 10, 0);
+    lv_obj_clear_flag(band_row, LV_OBJ_FLAG_SCROLLABLE);
+    const char *band_lbls[] = { "2.4G", "5G", "BLE" };
     for (int i = 0; i < 3; i++) {
-        lv_obj_t *btn = lv_btn_create(gps_popup);
-        lv_obj_set_size(btn, 220, 34);
-        lv_obj_set_style_bg_color(btn, ((int)wd_gps_type == i) ? UI_ACCENT_TEAL : ui_card_color(), 0);
-        lv_obj_set_style_radius(btn, 8, 0);
-        lv_obj_add_event_cb(btn, on_gps_type_pick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, labels[i]);
-        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_center(lbl);
+        wd_setup_band_cb[i] = lv_checkbox_create(band_row);
+        lv_checkbox_set_text(wd_setup_band_cb[i], band_lbls[i]);
+        lv_obj_set_style_text_color(wd_setup_band_cb[i], ui_text_color(), 0);
+        lv_obj_set_style_text_font(wd_setup_band_cb[i], &lv_font_montserrat_12, 0);
     }
 
-    lv_obj_t *close_btn = lv_btn_create(gps_popup);
-    lv_obj_set_size(close_btn, 220, 30);
-    style_neutral_button(close_btn);
-    lv_obj_add_event_cb(close_btn, on_gps_popup_close, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *clbl = lv_label_create(close_btn);
-    lv_label_set_text(clbl, "Close");
-    lv_obj_set_style_text_color(clbl, ui_text_color(), 0);
-    lv_obj_center(clbl);
+    /* Channels */
+    wd_setup_label(popup, "Channels", UI_ACCENT_CYAN);
+    wd_setup_channel_dd = lv_dropdown_create(popup);
+    lv_dropdown_set_options(wd_setup_channel_dd, "popular\nall\ncustom");
+    lv_obj_set_width(wd_setup_channel_dd, LV_PCT(100));
+    lv_obj_add_event_cb(wd_setup_channel_dd, wd_setup_channel_dd_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    wd_setup_custom_btn = lv_btn_create(popup);
+    lv_obj_set_size(wd_setup_custom_btn, LV_PCT(100), 30);
+    lv_obj_set_style_bg_color(wd_setup_custom_btn, ui_card_color(), 0);
+    lv_obj_set_style_border_color(wd_setup_custom_btn, UI_ACCENT_TEAL, 0);
+    lv_obj_set_style_border_width(wd_setup_custom_btn, 1, 0);
+    lv_obj_set_style_radius(wd_setup_custom_btn, 8, 0);
+    lv_obj_add_flag(wd_setup_custom_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(wd_setup_custom_btn, wd_setup_custom_btn_cb, LV_EVENT_CLICKED, NULL);
+    wd_setup_custom_lbl = lv_label_create(wd_setup_custom_btn);
+    lv_label_set_text(wd_setup_custom_lbl, "Custom: (none)");
+    lv_obj_set_style_text_color(wd_setup_custom_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(wd_setup_custom_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(wd_setup_custom_lbl);
+
+    /* WiFi RSSI delta */
+    lv_obj_t *wifi_hdr = wd_setup_row(popup);
+    wd_setup_label(wifi_hdr, "WiFi RSSI delta", UI_ACCENT_CYAN);
+    wd_setup_wifi_val = wd_setup_label(wifi_hdr, "5 dBm", UI_ACCENT_TEAL);
+    wd_setup_wifi_slider = lv_slider_create(popup);
+    lv_slider_set_range(wd_setup_wifi_slider, 0, 50);
+    lv_obj_set_width(wd_setup_wifi_slider, LV_PCT(100));
+    lv_obj_add_event_cb(wd_setup_wifi_slider, wd_setup_wifi_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* BLE RSSI delta */
+    lv_obj_t *ble_hdr = wd_setup_row(popup);
+    wd_setup_label(ble_hdr, "BLE RSSI delta", UI_ACCENT_CYAN);
+    wd_setup_ble_val = wd_setup_label(ble_hdr, "15 dBm", UI_ACCENT_TEAL);
+    wd_setup_ble_slider = lv_slider_create(popup);
+    lv_slider_set_range(wd_setup_ble_slider, 0, 50);
+    lv_obj_set_width(wd_setup_ble_slider, LV_PCT(100));
+    lv_obj_add_event_cb(wd_setup_ble_slider, wd_setup_ble_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Startup cooldown */
+    lv_obj_t *cd_hdr = wd_setup_row(popup);
+    wd_setup_label(cd_hdr, "Startup cooldown", UI_ACCENT_CYAN);
+    wd_setup_cd_val = wd_setup_label(cd_hdr, "0 s", UI_ACCENT_TEAL);
+    wd_setup_cd_slider = lv_slider_create(popup);
+    lv_slider_set_range(wd_setup_cd_slider, 0, 600);
+    lv_obj_set_width(wd_setup_cd_slider, LV_PCT(100));
+    lv_obj_add_event_cb(wd_setup_cd_slider, wd_setup_cd_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Memory cap */
+    lv_obj_t *mc_row = wd_setup_row(popup);
+    wd_setup_label(mc_row, "Memory cap", UI_ACCENT_CYAN);
+    wd_setup_memcap_dd = lv_dropdown_create(mc_row);
+    lv_dropdown_set_options(wd_setup_memcap_dd, wd_memcap_options);
+    lv_obj_set_width(wd_setup_memcap_dd, 130);
+
+    /* Anti-surv sensitivity */
+    lv_obj_t *as_row = wd_setup_row(popup);
+    wd_setup_label(as_row, "Anti-surv sens.", UI_ACCENT_CYAN);
+    wd_setup_antisurv_dd = lv_dropdown_create(as_row);
+    lv_dropdown_set_options(wd_setup_antisurv_dd, "low\nmed\nhigh");
+    lv_obj_set_width(wd_setup_antisurv_dd, 130);
+
+    /* Status */
+    wd_setup_status = lv_label_create(popup);
+    lv_label_set_text(wd_setup_status, "Configure once, then Start");
+    lv_obj_set_style_text_font(wd_setup_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(wd_setup_status, ui_muted_color(), 0);
+    lv_obj_set_width(wd_setup_status, LV_PCT(100));
+    lv_label_set_long_mode(wd_setup_status, LV_LABEL_LONG_WRAP);
+
+    /* Action buttons */
+    lv_obj_t *act_row = lv_obj_create(popup);
+    lv_obj_set_size(act_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(act_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(act_row, 0, 0);
+    lv_obj_set_style_pad_all(act_row, 0, 0);
+    lv_obj_set_flex_flow(act_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(act_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(act_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    wd_setup_load_btn = lv_btn_create(act_row);
+    lv_obj_set_size(wd_setup_load_btn, 88, 34);
+    lv_obj_set_style_bg_color(wd_setup_load_btn, UI_ACCENT_BLUE, 0);
+    lv_obj_set_style_radius(wd_setup_load_btn, 8, 0);
+    lv_obj_add_event_cb(wd_setup_load_btn, wd_setup_load_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *load_lbl = lv_label_create(wd_setup_load_btn);
+    lv_label_set_text(load_lbl, LV_SYMBOL_REFRESH " Load");
+    lv_obj_set_style_text_color(load_lbl, lv_color_white(), 0);
+    lv_obj_center(load_lbl);
+
+    wd_setup_apply_btn = lv_btn_create(act_row);
+    lv_obj_set_size(wd_setup_apply_btn, 90, 34);
+    lv_obj_set_style_bg_color(wd_setup_apply_btn, UI_ACCENT_GREEN, 0);
+    lv_obj_set_style_radius(wd_setup_apply_btn, 8, 0);
+    lv_obj_add_event_cb(wd_setup_apply_btn, wd_setup_apply_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *apply_lbl = lv_label_create(wd_setup_apply_btn);
+    lv_label_set_text(apply_lbl, LV_SYMBOL_OK " Apply");
+    lv_obj_set_style_text_color(apply_lbl, lv_color_white(), 0);
+    lv_obj_center(apply_lbl);
+
+    wd_setup_close_btn = lv_btn_create(act_row);
+    lv_obj_set_size(wd_setup_close_btn, 88, 34);
+    style_neutral_button(wd_setup_close_btn);
+    lv_obj_add_event_cb(wd_setup_close_btn, wd_setup_close_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *close_lbl = lv_label_create(wd_setup_close_btn);
+    lv_label_set_text(close_lbl, LV_SYMBOL_CLOSE " Close");
+    lv_obj_set_style_text_color(close_lbl, ui_text_color(), 0);
+    lv_obj_center(close_lbl);
+
+    /* Show local values, then refresh from device on a worker task. */
+    wd_setup_sync_controls();
+    wd_setup_load_cb(NULL);
 }
 
 /* ================================================================== */
@@ -826,8 +1423,6 @@ static void on_service_pick(lv_event_t *e)
     close_svc_popup();
 
     wd_files_count = 0;
-    stop_local_gps_timer();
-    wd_local_gps_lbl = NULL;
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Loading files...", on_back, NULL);
     lv_obj_t *lbl = lv_label_create(scr);
@@ -1243,17 +1838,18 @@ void show_wardrive_screen(void)
     wd_distance_m = 0.0;
     gps_overlay = NULL;
     gps_overlay_lbl = NULL;
-    gps_popup = NULL;
-    wd_local_gps_lbl = NULL;
+    wd_setup_overlay = NULL;
+    wd_setup_applying = false;
 
     lv_obj_t *scr = ui_screen_clear();
     lv_obj_t *bar = ui_create_top_bar(scr, "Wardrive", on_back, NULL);
     ui_add_top_bar_action(bar, LV_SYMBOL_UPLOAD, wardrive_upload_btn_cb, NULL);
     ui_add_top_bar_action(bar, LV_SYMBOL_GPS, on_gps_btn, NULL);
 
-    /* status + stats + local GPS stacked */
+    /* Header: status + live stats on the LEFT, compact action controls on the
+     * RIGHT (reclaims the old full-width button row so the list starts higher). */
     lv_obj_t *info = lv_obj_create(scr);
-    lv_obj_set_size(info, LV_PCT(100), 52);
+    lv_obj_set_size(info, 190, 40);
     lv_obj_set_pos(info, 0, 36);
     lv_obj_set_style_bg_opa(info, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(info, 0, 0);
@@ -1267,67 +1863,66 @@ void show_wardrive_screen(void)
     lv_label_set_text(wd_status_lbl, "Ready");
     lv_obj_set_style_text_color(wd_status_lbl, UI_ACCENT_TEAL, 0);
     lv_obj_set_style_text_font(wd_status_lbl, &lv_font_montserrat_12, 0);
+    lv_label_set_long_mode(wd_status_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(wd_status_lbl, LV_PCT(100));
 
     wd_stats_lbl = lv_label_create(info);
-    lv_label_set_text(wd_stats_lbl, "WiFi:0  BT:0  SAT:0  0.00km");
+    lv_label_set_text(wd_stats_lbl, "WiFi:0 BT:0 SAT:0 0.00km");
     lv_obj_set_style_text_color(wd_stats_lbl, ui_muted_color(), 0);
-    lv_obj_set_style_text_font(wd_stats_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(wd_stats_lbl, &lv_font_montserrat_10, 0);
 
-    wd_local_gps_lbl = lv_label_create(info);
-    lv_label_set_text(wd_local_gps_lbl, "GPS(local): ...");
-    lv_obj_set_style_text_color(wd_local_gps_lbl, ui_muted_color(), 0);
-    lv_obj_set_style_text_font(wd_local_gps_lbl, &lv_font_montserrat_10, 0);
-
-    /* button row: Start / Stop / Trace */
+    /* action column (right): Start/Stop (icon) + Trace, hugging the edge */
     lv_obj_t *btn_row = lv_obj_create(scr);
-    lv_obj_set_size(btn_row, LV_PCT(100), 34);
-    lv_obj_set_pos(btn_row, 0, 90);
+    lv_obj_set_size(btn_row, 130, 34);
+    lv_obj_set_pos(btn_row, 190, 39);
     lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(btn_row, 0, 0);
     lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_style_pad_right(btn_row, 8, 0);
     lv_obj_set_style_pad_column(btn_row, 6, 0);
     lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER,
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_END,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
     start_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(start_btn, 96, 30);
+    lv_obj_set_size(start_btn, 44, 30);
     lv_obj_set_style_bg_color(start_btn, UI_ACCENT_GREEN, 0);
     lv_obj_set_style_radius(start_btn, 8, 0);
     lv_obj_add_event_cb(start_btn, on_start, LV_EVENT_CLICKED, NULL);
     lv_obj_t *start_lbl = lv_label_create(start_btn);
-    lv_label_set_text(start_lbl, LV_SYMBOL_PLAY " Start");
+    lv_label_set_text(start_lbl, LV_SYMBOL_PLAY);
     lv_obj_set_style_text_color(start_lbl, lv_color_white(), 0);
     lv_obj_set_style_text_font(start_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(start_lbl);
 
     stop_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(stop_btn, 96, 30);
+    lv_obj_set_size(stop_btn, 44, 30);
     lv_obj_set_style_bg_color(stop_btn, UI_ACCENT_RED, 0);
     lv_obj_set_style_radius(stop_btn, 8, 0);
     lv_obj_add_event_cb(stop_btn, on_stop, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(stop_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t *stop_lbl = lv_label_create(stop_btn);
-    lv_label_set_text(stop_lbl, LV_SYMBOL_CLOSE " Stop");
+    lv_label_set_text(stop_lbl, LV_SYMBOL_STOP);
     lv_obj_set_style_text_color(stop_lbl, lv_color_white(), 0);
     lv_obj_set_style_text_font(stop_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(stop_lbl);
 
     trace_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(trace_btn, 100, 30);
+    lv_obj_set_size(trace_btn, 72, 30);
     lv_obj_set_style_radius(trace_btn, 8, 0);
+    lv_obj_set_style_pad_hor(trace_btn, 3, 0);
     lv_obj_add_event_cb(trace_btn, on_trace, LV_EVENT_CLICKED, NULL);
     trace_lbl = lv_label_create(trace_btn);
     lv_obj_set_style_text_color(trace_lbl, lv_color_white(), 0);
-    lv_obj_set_style_text_font(trace_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(trace_lbl, &lv_font_montserrat_12, 0);
     lv_obj_center(trace_lbl);
     update_trace_btn();
 
     /* network card list */
     wd_list = lv_obj_create(scr);
-    lv_obj_set_size(wd_list, LV_PCT(100), 240 - 126);
-    lv_obj_set_pos(wd_list, 0, 126);
+    lv_obj_set_size(wd_list, LV_PCT(100), 240 - 80);
+    lv_obj_set_pos(wd_list, 0, 80);
     lv_obj_set_style_bg_color(wd_list, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(wd_list, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(wd_list, 0, 0);
@@ -1338,5 +1933,4 @@ void show_wardrive_screen(void)
     lv_obj_set_scroll_dir(wd_list, LV_DIR_VER);
 
     update_list();
-    start_local_gps_timer();
 }

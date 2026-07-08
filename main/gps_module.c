@@ -16,6 +16,10 @@ static const char *TAG = "gps_module";
 #define GPS_RX_BUF_SIZE     2048
 #define GPS_LINE_MAX        128
 #define GPS_FIX_STALE_US    (5LL * 1000 * 1000)   /* 5 s */
+/* Loud auto-baud sweeps before we drop to a slow, quiet cadence. Mirrors
+ * Tab5's USB-CDC GPS, which simply stays silent when no device is present:
+ * if nothing is on G17/G18 we stop flooding the console. */
+#define GPS_MAX_SWEEPS      2
 
 /* NVS lives in ui_helpers; mirror the namespace + key there. */
 #define GPS_NVS_NAMESPACE   "settings"
@@ -140,6 +144,7 @@ static void gps_rx_task(void *arg)
     int  pos = 0;
     uint8_t byte;
     int     baud_idx = 0;
+    int     sweeps   = 0;   /* completed baud passes with no lock */
     int64_t last_switch_us = esp_timer_get_time();
 
     ESP_LOGI(TAG, "GPS reader started on UART%d RX=GPIO%d @ %d baud (auto-detect)",
@@ -175,15 +180,31 @@ static void gps_rx_task(void *arg)
             }
         }
 
-        /* Auto-baud: if no valid NMEA seen yet, cycle rates every ~3 s. */
-        if (!s_locked && (esp_timer_get_time() - last_switch_us) > 3000000LL) {
-            baud_idx = (baud_idx + 1) % GPS_NUM_BAUDS;
-            s_baud = k_bauds[baud_idx];
-            uart_flush_input(GPS_UART_PORT);
-            uart_set_baudrate(GPS_UART_PORT, s_baud);
-            pos = 0;
-            last_switch_us = esp_timer_get_time();
-            ESP_LOGW(TAG, "No NMEA yet, trying %d baud", s_baud);
+        /* Auto-baud: cycle rates until valid NMEA locks. Bound the *loud*
+         * phase so a bare UART (nothing wired to G17/G18) doesn't spam the
+         * console forever. After GPS_MAX_SWEEPS full passes we keep probing
+         * but slowly (~15 s) and at debug level, having logged one warning —
+         * the console-quiet analogue of Tab5's "silent when no GPS present". */
+        if (!s_locked) {
+            int64_t interval = (sweeps < GPS_MAX_SWEEPS) ? 3000000LL : 15000000LL;
+            if ((esp_timer_get_time() - last_switch_us) > interval) {
+                baud_idx = (baud_idx + 1) % GPS_NUM_BAUDS;
+                bool wrapped = (baud_idx == 0);
+                if (wrapped && sweeps < 1000000) sweeps++;
+                s_baud = k_bauds[baud_idx];
+                uart_flush_input(GPS_UART_PORT);
+                uart_set_baudrate(GPS_UART_PORT, s_baud);
+                pos = 0;
+                last_switch_us = esp_timer_get_time();
+                if (wrapped && sweeps == GPS_MAX_SWEEPS) {
+                    ESP_LOGW(TAG, "No NMEA on UART%d (RX=G%d) after %d sweeps; "
+                             "slowing auto-detect. Attach the M5 GPS to G17/G18 "
+                             "or disable External GPS in Settings.",
+                             GPS_UART_PORT, GPS_MODULE_UART_RX_PIN, GPS_MAX_SWEEPS);
+                } else {
+                    ESP_LOGD(TAG, "No NMEA yet, trying %d baud", s_baud);
+                }
+            }
         }
     }
 

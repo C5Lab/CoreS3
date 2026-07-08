@@ -2,7 +2,6 @@
 #include "home_screen.h"
 #include "handshaker_screen.h"
 #include "portal_screen.h"
-#include "wardrive_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "bsp/m5stack_core_s3.h"
@@ -349,13 +348,6 @@ static void on_snifferdog(lv_event_t *e)
     show_snifferdog_confirm();
 }
 
-static void on_wardrive(lv_event_t *e)
-{
-    (void)e;
-    ESP_LOGI(TAG, "Wardrive selected");
-    show_wardrive_screen();
-}
-
 /* ================================================================== */
 /*  Menu page                                                          */
 /* ================================================================== */
@@ -390,5 +382,4 @@ void show_global_attacks_screen(void)
     ui_create_tile(grid, LV_SYMBOL_REFRESH,  "Handshaker",   UI_ACCENT_ORANGE, on_handshaker, NULL);
     ui_create_tile(grid, LV_SYMBOL_HOME,     "Portal",       UI_ACCENT_PURPLE, on_portal,     NULL);
     ui_create_tile(grid, LV_SYMBOL_EYE_OPEN, "Sniffer Dog",  UI_ACCENT_CYAN,   on_snifferdog, NULL);
-    ui_create_tile(grid, LV_SYMBOL_GPS,      "Wardrive",     UI_ACCENT_TEAL,   on_wardrive,   NULL);
 }

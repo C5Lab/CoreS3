@@ -12,7 +12,7 @@ dependencies:
   espressif/esp32-camera:
     dependencies: []
     source:
-      path: components/espressif__esp32-camera
+      path: components\espressif__esp32-camera
       type: local
     version: 2.1.5
   espressif/esp_codec_dev:

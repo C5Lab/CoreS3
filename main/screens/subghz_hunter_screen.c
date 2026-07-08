@@ -650,8 +650,6 @@ static void on_signal_row_clicked(lv_event_t *e)
 static void parse_fa_status_line(const char *line)
 {
     if (strstr(line, "[SUBGHZ_FA] hunt capture")) {
-        float f = 0.0f;
-        const char *p = strstr(line, "freq=");
         set_status(HUNTER_STATUS_CAPTURING, "Capturing signals..");
         return;
     }

@@ -1,6 +1,7 @@
 #include "home_screen.h"
 #include "wifi_scan_screen.h"
 #include "global_attacks_screen.h"
+#include "wardrive_screen.h"
 #include "network_observer_screen.h"
 #include "compromised_data_screen.h"
 #include "bluetooth_screen.h"
@@ -71,6 +72,13 @@ static void on_ir(lv_event_t *e)
     show_ir_remote_screen();
 }
 
+static void on_wardrive(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "Wardrive");
+    show_wardrive_screen();
+}
+
 static void on_settings(lv_event_t *e)
 {
     (void)e;
@@ -115,5 +123,6 @@ void show_home_screen(void)
         ui_create_tile(grid, LV_SYMBOL_BARS,  "Sub-GHz",                   UI_ACCENT_PINK,           on_subghz,          NULL);
     }
     ui_create_tile(grid, LV_SYMBOL_VIDEO,     "IR TV\nPower",              UI_ACCENT_TEAL,           on_ir,              NULL);
+    ui_create_tile(grid, LV_SYMBOL_GPS,       "Wardrive",                  UI_ACCENT_TEAL,           on_wardrive,        NULL);
     ui_create_tile(grid, LV_SYMBOL_SETTINGS,  "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
 }
