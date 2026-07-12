@@ -217,7 +217,7 @@ static esp_err_t ll_cam_dma_init(cam_obj_t *cam)
 #endif
 #else
     gdma_channel_alloc_config_t rx_alloc_config = {0};
-    esp_err_t ret = gdma_new_ahb_channel(&rx_alloc_config, &cam->dma_channel_handle);
+    esp_err_t ret = gdma_new_ahb_channel(&rx_alloc_config, NULL, &cam->dma_channel_handle);
 #endif
     if (ret != ESP_OK) {
         cam_deinit();

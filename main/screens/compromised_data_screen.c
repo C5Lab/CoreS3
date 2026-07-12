@@ -2,10 +2,13 @@
 #include "home_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
+#include "wifi_connect_helper.h"
 #include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -61,6 +64,7 @@ static bool timer_collecting = false;
 static void show_evil_pass_list(void);
 static void show_portal_data_list(void);
 static void show_handshake_list(void);
+static void on_wpasec_upload_btn(lv_event_t *e);
 
 /* ================================================================== */
 /*  Navigation: back to home / back to compromised menu                */
@@ -497,7 +501,10 @@ static void on_portal_data(lv_event_t *e)
 static void show_handshake_list(void)
 {
     lv_obj_t *scr = ui_screen_clear();
-    ui_create_top_bar(scr, "Handshakes", on_back_menu, NULL);
+    lv_obj_t *bar = ui_create_top_bar(scr, "Handshakes", on_back_menu, NULL);
+    /* Upload all captured .pcap handshakes to wpa-sec.stanev.org. Shown even
+     * with an empty list, since the C5 uploads every handshake on its SD card. */
+    ui_add_top_bar_action(bar, LV_SYMBOL_UPLOAD, on_wpasec_upload_btn, NULL);
 
     if (hs_count == 0) {
         lv_obj_t *lbl = lv_label_create(scr);
@@ -588,6 +595,345 @@ static void on_handshakes(lv_event_t *e)
 
     uart_start_collect("Found", hs_collect_cb);
     uart_send_command("list_dir /sdcard/lab/handshakes");
+}
+
+/* ================================================================== */
+/*  WPA-SEC upload flow                                                */
+/*                                                                     */
+/*  Mirrors the Wardrive upload flow (wardrive_screen.c): check the    */
+/*  API key on the C5, scan/pick a WiFi network, connect (with         */
+/*  evil-twin password fallback), then send `wpasec_upload` and stream */
+/*  the firmware's progress lines into a scrolling log.                */
+/* ================================================================== */
+
+static wifi_network_t *ws_aps = NULL;   /* scan results */
+static int ws_aps_cap = 0;
+static int ws_aps_cnt = 0;
+static wifi_network_t ws_net;           /* selected AP */
+static char ws_pass[64];
+static lv_obj_t *ws_status = NULL;      /* status label on the active screen */
+static lv_obj_t *ws_log = NULL;         /* scrolling upload log container */
+
+static void ws_show_ap_picker(void);
+static void ws_start_scan(void);
+static void ws_start_upload(void);
+
+/* ---- key missing message ---- */
+
+static void ws_show_key_missing(void)
+{
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "WPA-SEC Upload", on_back_menu, NULL);
+
+    lv_obj_t *box = lv_obj_create(scr);
+    lv_obj_set_size(box, LV_PCT(100), 240 - 36);
+    lv_obj_set_pos(box, 0, 36);
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 0, 0);
+    lv_obj_set_style_pad_all(box, 12, 0);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(box, 8, 0);
+
+    lv_obj_t *title = lv_label_create(box);
+    lv_label_set_text(title, "No WPA-SEC key set");
+    lv_obj_set_style_text_color(title, UI_ACCENT_RED, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *msg = lv_label_create(box);
+    lv_label_set_text(msg,
+        "Set your key on the C5 module:\n"
+        "  wpasec_key set <key>\n"
+        "or create /sdcard/lab/wpa-sec.txt\n\n"
+        "Get a key at:\n"
+        "wpa-sec.stanev.org/?get_key");
+    lv_obj_set_style_text_color(msg, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_12, 0);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, LV_PCT(100));
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+}
+
+/* ---- key check (off the LVGL thread) ---- */
+
+static void ws_key_result_cb(void *arg)
+{
+    bool *key_set = (bool *)arg;
+    bool ok = key_set && *key_set;
+    free(key_set);
+
+    bsp_display_lock(0);
+    if (ok) ws_start_scan();
+    else    ws_show_key_missing();
+    bsp_display_unlock();
+}
+
+static void ws_key_check_task(void *arg)
+{
+    (void)arg;
+    char line[256] = {0};
+    bool got = uart_send_wait_line("wpasec_key read", "WPA-SEC key",
+                                   line, sizeof(line), 5000);
+    bool key_set = got && (strstr(line, "not set") == NULL);
+
+    bool *res = malloc(sizeof(bool));
+    if (res) {
+        *res = key_set;
+        if (!ui_lvgl_async_call(ws_key_result_cb, res))
+            free(res);
+    }
+    vTaskDelete(NULL);
+}
+
+static void on_wpasec_upload_btn(lv_event_t *e)
+{
+    (void)e;
+    show_loading("WPA-SEC Upload", "Checking WPA-SEC key...");
+    xTaskCreate(ws_key_check_task, "ws_key", 4096, NULL, 5, NULL);
+}
+
+/* ---- AP scan + picker (ported from wardrive_screen.c) ---- */
+
+static const char *ws_parse_quoted(const char *p, char *out, int max)
+{
+    if (*p != '"') return NULL;
+    p++;
+    int i = 0;
+    while (*p && *p != '"' && i < max - 1) out[i++] = *p++;
+    out[i] = '\0';
+    if (*p != '"') return NULL;
+    p++;
+    if (*p == ',') p++;
+    return p;
+}
+
+static bool ws_parse_ap_line(const char *line, wifi_network_t *net)
+{
+    if (line[0] != '"') return false;
+    const char *p = line;
+    char field[64];
+    memset(net, 0, sizeof(*net));
+
+    p = ws_parse_quoted(p, field, sizeof(field));            if (!p) return false;
+    net->index = (uint8_t)atoi(field);
+    p = ws_parse_quoted(p, net->ssid, sizeof(net->ssid));    if (!p) return false;
+    p = ws_parse_quoted(p, field, sizeof(field));            if (!p) return false; /* empty */
+    p = ws_parse_quoted(p, net->bssid, sizeof(net->bssid));  if (!p) return false;
+    p = ws_parse_quoted(p, field, sizeof(field));            if (!p) return false;
+    net->channel = (uint8_t)atoi(field);
+    p = ws_parse_quoted(p, net->security, sizeof(net->security)); if (!p) return false;
+    p = ws_parse_quoted(p, field, sizeof(field));            if (!p) return false;
+    net->rssi = (int8_t)atoi(field);
+    return true;
+}
+
+static void ws_ap_collect_cb(const char **lines, int line_count)
+{
+    ws_aps_cnt = 0;
+    for (int i = 0; i < line_count; i++) {
+        wifi_network_t net;
+        if (ws_parse_ap_line(lines[i], &net)) {
+            if (net.ssid[0] == '\0') continue;
+            if (!psram_dynarr_ensure((void **)&ws_aps, &ws_aps_cap,
+                                     ws_aps_cnt + 1, sizeof(*ws_aps), 256))
+                break;
+            ws_aps[ws_aps_cnt++] = net;
+        }
+    }
+    ESP_LOGI(TAG, "WPA-SEC upload: %d APs", ws_aps_cnt);
+    bsp_display_lock(0);
+    ws_show_ap_picker();
+    bsp_display_unlock();
+}
+
+/* ---- connect ---- */
+
+static void ws_on_connect_done(bool success, void *unused)
+{
+    (void)unused;
+    if (!success) {
+        bsp_display_lock(0);
+        if (ws_status && lv_obj_is_valid(ws_status)) {
+            lv_label_set_text(ws_status, "WiFi connect failed.");
+            lv_obj_set_style_text_color(ws_status, UI_ACCENT_RED, 0);
+        }
+        bsp_display_unlock();
+        return;
+    }
+    ws_start_upload();
+}
+
+static void ws_on_pass_confirm(const char *text, void *unused)
+{
+    (void)unused;
+    if (text) snprintf(ws_pass, sizeof(ws_pass), "%s", text);
+    bsp_display_lock(0);
+    if (ws_status && lv_obj_is_valid(ws_status))
+        lv_label_set_text(ws_status, "Connecting...");
+    bsp_display_unlock();
+    wifi_connect_async(&ws_net, ws_pass[0] ? ws_pass : NULL, ws_on_connect_done, NULL);
+}
+
+static void ws_on_ap_pick(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= ws_aps_cnt) return;
+    ws_net = ws_aps[idx];
+    ws_pass[0] = '\0';
+
+    if (wifi_network_is_open(&ws_net)) {
+        if (ws_status && lv_obj_is_valid(ws_status))
+            lv_label_set_text(ws_status, "Connecting...");
+        wifi_connect_async(&ws_net, NULL, ws_on_connect_done, NULL);
+        return;
+    }
+    char evil[64] = {0};
+    if (wifi_lookup_evil_password(ws_net.ssid, evil, sizeof(evil))) {
+        snprintf(ws_pass, sizeof(ws_pass), "%s", evil);
+        if (ws_status && lv_obj_is_valid(ws_status))
+            lv_label_set_text(ws_status, "Connecting...");
+        wifi_connect_async(&ws_net, ws_pass, ws_on_connect_done, NULL);
+        return;
+    }
+    ui_show_text_input_popup("WiFi Password", "", 63, UI_ACCENT_GREEN,
+                             ws_on_pass_confirm, NULL, NULL);
+}
+
+static void ws_on_ap_rescan(lv_event_t *e) { (void)e; ws_start_scan(); }
+
+static void ws_show_ap_picker(void)
+{
+    lv_obj_t *scr = ui_screen_clear();
+    lv_obj_t *bar = ui_create_top_bar(scr, "Select WiFi", on_back_menu, NULL);
+    ui_add_top_bar_action(bar, LV_SYMBOL_REFRESH, ws_on_ap_rescan, NULL);
+
+    ws_status = lv_label_create(scr);
+    lv_label_set_text(ws_status, ws_aps_cnt ? "Pick an access point:" : "No networks found.");
+    lv_obj_set_style_text_color(ws_status, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(ws_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(ws_status, 8, 40);
+
+    lv_obj_t *list = lv_obj_create(scr);
+    lv_obj_set_size(list, LV_PCT(100), 240 - 60);
+    lv_obj_set_pos(list, 0, 58);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 6, 0);
+    lv_obj_set_style_pad_row(list, 3, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+
+    for (int i = 0; i < ws_aps_cnt; i++) {
+        lv_obj_t *btn = lv_btn_create(list);
+        lv_obj_set_size(btn, LV_PCT(100), 30);
+        lv_obj_set_style_bg_color(btn, ui_panel_color(), 0);
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_add_event_cb(btn, ws_on_ap_pick, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_t *lbl = lv_label_create(btn);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.24s  %ddBm%s", ws_aps[i].ssid, ws_aps[i].rssi,
+                 wifi_network_is_open(&ws_aps[i]) ? "  OPEN" : "");
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+        lv_obj_center(lbl);
+    }
+}
+
+static void ws_start_scan(void)
+{
+    ws_aps_cnt = 0;
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "Scanning WiFi", on_back_menu, NULL);
+    ws_status = lv_label_create(scr);
+    lv_label_set_text(ws_status, "Scanning networks...");
+    lv_obj_set_style_text_color(ws_status, ui_text_color(), 0);
+    lv_obj_center(ws_status);
+
+    uart_start_collect("Scan results printed", ws_ap_collect_cb);
+    uart_send_command("scan_networks");
+}
+
+/* ---- upload progress ---- */
+
+static void ws_upload_line_cb(const char *line)
+{
+    if (!line || !line[0]) return;
+
+    bsp_display_lock(0);
+    if (ws_log && lv_obj_is_valid(ws_log)) {
+        lv_obj_t *l = lv_label_create(ws_log);
+        lv_label_set_text(l, line);
+        lv_obj_set_style_text_color(l, ui_text_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_10, 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, LV_PCT(100));
+        lv_obj_scroll_to_view(l, LV_ANIM_OFF);
+    }
+    bsp_display_unlock();
+
+    int up = 0, dup = 0, fail = 0;
+    if (sscanf(line, "Done: %d uploaded, %d duplicate, %d failed", &up, &dup, &fail) == 3) {
+        uart_set_line_callback(NULL);
+        bsp_display_lock(0);
+        if (ws_status && lv_obj_is_valid(ws_status)) {
+            lv_label_set_text_fmt(ws_status, "Done: %d up, %d dup, %d failed", up, dup, fail);
+            lv_obj_set_style_text_color(ws_status, UI_ACCENT_GREEN, 0);
+        }
+        bsp_display_unlock();
+        return;
+    }
+    if (strstr(line, "Done") || strstr(line, "FAILED") ||
+        strstr(line, "Error") || strstr(line, "Unrecognized command")) {
+        uart_set_line_callback(NULL);
+        bsp_display_lock(0);
+        if (ws_status && lv_obj_is_valid(ws_status)) {
+            lv_label_set_text(ws_status, "Finished.");
+            lv_obj_set_style_text_color(ws_status, UI_ACCENT_GREEN, 0);
+        }
+        bsp_display_unlock();
+    }
+}
+
+static void ws_on_upload_back(lv_event_t *e)
+{
+    (void)e;
+    uart_set_line_callback(NULL);
+    uart_send_command("stop");
+    bsp_display_lock(0);
+    show_handshake_list();
+    bsp_display_unlock();
+}
+
+static void ws_start_upload(void)
+{
+    bsp_display_lock(0);
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "WPA-SEC Upload", ws_on_upload_back, NULL);
+
+    ws_status = lv_label_create(scr);
+    lv_label_set_text(ws_status, "Connected. Uploading...");
+    lv_obj_set_style_text_color(ws_status, UI_ACCENT_GREEN, 0);
+    lv_obj_set_style_text_font(ws_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_pos(ws_status, 8, 40);
+
+    ws_log = lv_obj_create(scr);
+    lv_obj_set_size(ws_log, LV_PCT(100), 240 - 60);
+    lv_obj_set_pos(ws_log, 0, 58);
+    lv_obj_set_style_bg_color(ws_log, ui_card_color(), 0);
+    lv_obj_set_style_bg_opa(ws_log, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ws_log, 0, 0);
+    lv_obj_set_style_pad_all(ws_log, 4, 0);
+    lv_obj_set_style_pad_row(ws_log, 1, 0);
+    lv_obj_set_flex_flow(ws_log, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(ws_log, LV_DIR_VER);
+    bsp_display_unlock();
+
+    uart_set_line_callback(ws_upload_line_cb);
+    uart_handler_flush_rx();
+    uart_send_command("wpasec_upload");
+    ESP_LOGI(TAG, "Sent wpasec_upload");
 }
 
 /* ================================================================== */

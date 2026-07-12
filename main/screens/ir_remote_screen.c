@@ -3,7 +3,6 @@
 #include "ui_helpers.h"
 #include "ir_db.h"
 #include "ir_tx.h"
-#include "led_indicator.h"
 #include "esp_log.h"
 
 #include <stdlib.h>
@@ -47,7 +46,6 @@ static void tx_finish(bool completed)
     }
     s_running = false;
 
-    led_indicator_tx_stop();
     ui_screen_idle_inhibit(false);
 
     tx_set_button_idle();
@@ -124,7 +122,6 @@ static void tx_start(void)
     }
 
     tx_set_button_busy();
-    led_indicator_tx_start();
     ui_screen_idle_inhibit(true);
 
     s_tx_timer = lv_timer_create(tx_tick_cb, IR_TICK_PERIOD_MS, NULL);
@@ -155,7 +152,6 @@ static void on_back(lv_event_t *e)
         s_tx_timer = NULL;
     }
     s_running = false;
-    led_indicator_tx_stop();
     ui_screen_idle_inhibit(false);
     show_home_screen();
 }
