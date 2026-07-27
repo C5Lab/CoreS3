@@ -1,5 +1,4 @@
 #include "lv_gltf_view_shader.h"
-#include "../lv_gltf_view_internal.h"
 
 #if LV_USE_GLTF
 
@@ -13,9 +12,8 @@ static const lv_opengl_shader_t src_includes[] = {
         uniform float u_Exposure;
 
 
-        // const float STANDARD_GAMMA = 2.2; // Retained for reference - unused
-
-        const float GAMMA = )" LV_GLTF_TONEMAP_GAMMA R"(;
+        const float STANDARD_GAMMA = 2.2;
+        const float GAMMA = STANDARD_GAMMA;
         const float INV_GAMMA = 1.0 / GAMMA;
 
 
@@ -1098,7 +1096,7 @@ static const lv_opengl_shader_t src_includes[] = {
         vec3 getTransmissionSample(vec2 fragCoord, float roughness, float ior)
         {
             float framebufferLod = log2(float(u_TransmissionFramebufferSize.x)) * applyIorToRoughness(roughness, ior);
-            vec3 transmittedLight = textureLod(u_TransmissionFramebufferSampler, fragCoord.xy, framebufferLod).bgr; // r/b switched intentionally;
+            vec3 transmittedLight = textureLod(u_TransmissionFramebufferSampler, fragCoord.xy, framebufferLod).rgb;
 
             return transmittedLight;
         }
@@ -1257,7 +1255,7 @@ static const lv_opengl_shader_t src_includes[] = {
         uniform ivec2 u_ScreenSize;
         #endif
 
-        uniform highp mat4 u_ModelMatrix;
+        uniform mat4 u_ModelMatrix;
         uniform mat4 u_ViewMatrix;
         uniform mat4 u_ProjectionMatrix;
 
@@ -2530,11 +2528,11 @@ static const lv_opengl_shader_t src_includes[] = {
 
 
         #ifdef MATERIAL_UNLIT
-            #ifdef HAS_EMISSIVE_MAP
-                color = f_emissive;
-            #else
+            //#ifdef HAS_EMISSIVE_MAP
+            //    color = texture(u_EmissiveSampler, getEmissiveUV()).rgb;
+            //#else
                 color = baseColor.rgb;
-            #endif
+            //#endif
         #elif defined(NOT_TRIANGLE) && !defined(HAS_NORMAL_VEC3)
             //Points or Lines with no NORMAL attribute SHOULD be rendered without lighting and instead use the sum of the base color value and the emissive value.
             color = f_emissive + baseColor.rgb;
@@ -2553,13 +2551,12 @@ static const lv_opengl_shader_t src_includes[] = {
             baseColor.a = 1.0;
         #endif
 
-        // The red and blue channels are switched after any tonemapping
-        // They will be switched back the correct way by the 2D shader
         #ifdef LINEAR_OUTPUT
-            g_finalColor = vec4(color.bgr, baseColor.a);
+            g_finalColor = vec4(color.rgb, baseColor.a);
         #else
-            g_finalColor = vec4(toneMap(color).bgr, baseColor.a);
+            g_finalColor = vec4(toneMap(color), baseColor.a);
         #endif
+
 
             /*
         #else
@@ -2770,9 +2767,7 @@ static const lv_opengl_shader_t src_includes[] = {
 static const lv_opengl_shader_t env_src_includes[] = {
     {
         "fullscreen.vert", R"(
-        precision lowp float;  
-        // The vertex positions being supplied to this shader are
-        // always exactly 0 or 1, so low precision is fine here.
+        precision highp float;
 
         in vec2 aPosition;
         in vec2 aTexCoord;
@@ -3410,7 +3405,7 @@ static const lv_opengl_shader_t env_src_includes[] = {
 
 static const char * src_vertex_shader = R"(
     uniform mat4 u_ViewProjectionMatrix;
-    uniform highp mat4 u_ModelMatrix;
+    uniform mat4 u_ModelMatrix;
     uniform mat4 u_NormalMatrix;
 
     in vec3 a_position;
@@ -3442,7 +3437,7 @@ static const char *src_fragment_shader = R"(
     // [5] "KHR_materials_clearcoat"
     //     https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_clearcoat
 
-    precision mediump float;
+    precision highp float;
 
 #include <tonemapping.glsl>
 #include <textures1.glsl>

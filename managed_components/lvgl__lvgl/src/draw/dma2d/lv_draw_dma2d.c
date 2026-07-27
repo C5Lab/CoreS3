@@ -209,16 +209,14 @@ void lv_draw_dma2d_configure_and_start_transfer(const lv_draw_dma2d_configuratio
 void lv_draw_dma2d_invalidate_cache(const lv_draw_dma2d_cache_area_t * mem_area)
 {
     if(SCB->CCR & SCB_CCR_DC_Msk) {
-        SCB_InvalidateDCache_by_Addr((uint32_t *)mem_area->first_byte,
-                                     mem_area->stride * mem_area->height);
+        SCB_InvalidateDCache();
     }
 }
 
 void lv_draw_dma2d_clean_cache(const lv_draw_dma2d_cache_area_t * mem_area)
 {
     if(SCB->CCR & SCB_CCR_DC_Msk) {
-        SCB_CleanDCache_by_Addr((uint32_t *)mem_area->first_byte,
-                                mem_area->stride * mem_area->height);
+        SCB_CleanDCache();
     }
 }
 #endif

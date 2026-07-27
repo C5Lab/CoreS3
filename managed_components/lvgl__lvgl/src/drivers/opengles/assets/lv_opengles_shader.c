@@ -85,7 +85,6 @@ static const char *src_fragment_shader_v100 = R"(
     uniform float u_Opa;
     uniform bool u_IsFill;
     uniform vec3 u_FillColor;
-    uniform bool u_SwapRB;
     
     #ifdef HSV_ADJUST
 #include <hsv_adjust.glsl>
@@ -101,13 +100,10 @@ static const char *src_fragment_shader_v100 = R"(
         }
         if (abs(u_ColorDepth - 8.0) < 0.1) {
             float gray = texColor.r;
-            gl_FragColor = vec4(vec3(gray * u_Opa), u_Opa);
+            gl_FragColor = vec4(gray, gray, gray, u_Opa);
         } else {
             float combinedAlpha = texColor.a * u_Opa;
             gl_FragColor = vec4(texColor.rgb * combinedAlpha, combinedAlpha);
-        }
-        if (u_SwapRB) {
-            gl_FragColor.bgr = gl_FragColor.rgb;
         }
         #ifdef HSV_ADJUST
         gl_FragColor.rgb = adjustHSV(gl_FragColor.rgb);
@@ -174,30 +170,13 @@ static const char * src_vertex_shader_v300es = R"(
     in vec2 texCoord;
     
     out vec2 v_TexCoord;
-    flat out lowp vec4 fill_color_alpha;
-    flat out lowp int is_gray;
-
-    uniform lowp float u_Opa;
-    uniform bool u_IsFill;
-    uniform vec3 u_FillColor;
+    
     uniform mat3 u_VertexTransform;
-    uniform float u_ColorDepth;
     
     void main()
     {
         gl_Position = vec4((u_VertexTransform * vec3(position.xy, 1)).xy, position.zw);
         v_TexCoord = texCoord;
-        is_gray = (abs(u_ColorDepth - 8.0) < 0.1) ? 1 : 0;
-
-        if (u_IsFill) {
-            if (is_gray == 1) {
-                fill_color_alpha = vec4(u_FillColor.rrr, 1.0) * u_Opa;
-            } else {
-                fill_color_alpha = vec4((u_FillColor.rgb * u_Opa), u_Opa);
-            }
-        } else {
-            fill_color_alpha = vec4(0.0, 0.0, 0.0, -1.0);
-        }
     }
 )";
 
@@ -207,12 +186,12 @@ static const char *src_fragment_shader_v300es = R"(
     out vec4 color;
     
     in vec2 v_TexCoord;
-    flat in lowp vec4 fill_color_alpha;
-    flat in lowp int is_gray;
     
     uniform sampler2D u_Texture;
-    uniform lowp float u_Opa;
-    uniform bool u_SwapRB;
+    uniform float u_ColorDepth;
+    uniform float u_Opa;
+    uniform bool u_IsFill;
+    uniform vec3 u_FillColor;
     
     #ifdef HSV_ADJUST
 #include <hsv_adjust.glsl>
@@ -220,25 +199,19 @@ static const char *src_fragment_shader_v300es = R"(
 
     void main()
     {
-        if (fill_color_alpha.a != -1.0) {
-            color = fill_color_alpha;
+        vec4 texColor;
+        if (u_IsFill) {
+            texColor = vec4(u_FillColor, 1.0);
         } else {
-            color = texture(u_Texture, v_TexCoord);
-            /* If the vertices have been transformed, and mipmaps have not been generated, 
-             * some rotation angles (notably 90 and 270) require using textureLod() to mitigate 
-             * derivative calculation errors from interpolator increments flipping direction.
-             * color = textureLod(u_Texture, v_TexCoord, u_LodLevel);
-             */
-            if (is_gray != 0) {
-                color.r *= u_Opa;
-                color.gba = vec3(color.rr, u_Opa);
-            } else {
-                color.a *= u_Opa;
-                color.rgb *= color.a;
-            }
+            //texColor = texture(u_Texture, v_TexCoord);
+            texColor = textureLod(u_Texture, v_TexCoord, 0.0);  // If the vertices have been transformed, and mipmaps have not been generated, some rotation angles (notably 90 and 270) require using textureLod() to mitigate derivative calculation errors from increments flipping direction
         }
-        if (u_SwapRB) {
-            color.bgr = color.rgb;
+        if (abs(u_ColorDepth - 8.0) < 0.1) {
+            float gray = texColor.r;
+            color = vec4(gray, gray, gray, u_Opa);
+        } else {
+            float combinedAlpha = texColor.a * u_Opa;
+            color = vec4(texColor.rgb * combinedAlpha, combinedAlpha);
         }
         #ifdef HSV_ADJUST
         color.rgb = adjustHSV(color.rgb);
@@ -253,9 +226,8 @@ static const size_t src_includes_v300es_count = sizeof src_includes_v300es / siz
  *   GLOBAL FUNCTIONS
  **********************/
 
-char * lv_opengles_shader_get_vertex(lv_opengl_glsl_version_t version) {
+char * lv_opengles_shader_get_vertex(lv_opengl_glsl_version version) {
     switch (version){
-        case LV_OPENGL_GLSL_VERSION_330:
         case LV_OPENGL_GLSL_VERSION_300ES:
             return lv_opengl_shader_manager_process_includes(src_vertex_shader_v300es, src_includes_v300es, src_includes_v300es_count);
         case LV_OPENGL_GLSL_VERSION_100:
@@ -267,9 +239,8 @@ char * lv_opengles_shader_get_vertex(lv_opengl_glsl_version_t version) {
     LV_UNREACHABLE();
 }
 
-char * lv_opengles_shader_get_fragment(lv_opengl_glsl_version_t version) {
+char * lv_opengles_shader_get_fragment(lv_opengl_glsl_version version) {
     switch (version){
-        case LV_OPENGL_GLSL_VERSION_330:
         case LV_OPENGL_GLSL_VERSION_300ES:
             return lv_opengl_shader_manager_process_includes(src_fragment_shader_v300es, src_includes_v300es, src_includes_v300es_count);
         case LV_OPENGL_GLSL_VERSION_100:
@@ -281,10 +252,9 @@ char * lv_opengles_shader_get_fragment(lv_opengl_glsl_version_t version) {
     LV_UNREACHABLE();
 }
 
-void lv_opengles_shader_get_source(lv_opengl_shader_portions_t *portions, lv_opengl_glsl_version_t version)
+void lv_opengles_shader_get_source(lv_opengl_shader_portions_t *portions, lv_opengl_glsl_version version)
 {
     switch (version){
-        case LV_OPENGL_GLSL_VERSION_330:
         case LV_OPENGL_GLSL_VERSION_300ES:
             portions->all = src_includes_v300es;
             portions->count = src_includes_v300es_count;

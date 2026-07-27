@@ -1,6 +1,3 @@
-.. example_heading: Image Font
-
-
 Use emojis in a text.
 ---------------------
 

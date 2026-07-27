@@ -1,5 +1,3 @@
-.. example_heading: Events
-
 
 Button click event
 ------------------

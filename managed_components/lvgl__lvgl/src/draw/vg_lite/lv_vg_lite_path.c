@@ -13,6 +13,7 @@
 
 #include "lv_draw_vg_lite_type.h"
 #include "lv_vg_lite_math.h"
+#include <float.h>
 
 /*********************
  *      DEFINES

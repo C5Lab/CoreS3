@@ -1,4 +1,4 @@
-Sphinx<=8.2.3
+Sphinx
 breathe
 imagesize
 importlib-metadata

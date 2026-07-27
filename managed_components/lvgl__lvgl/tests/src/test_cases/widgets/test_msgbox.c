@@ -68,7 +68,6 @@ void test_msgbox_creation_successful_modal(void)
     msgbox = lv_msgbox_create(NULL);
     lv_msgbox_add_title(msgbox, "The title");
     lv_msgbox_add_text(msgbox, "The text");
-    lv_msgbox_add_text_fmt(msgbox, "The %s text", "fmt");
     lv_msgbox_add_footer_button(msgbox, "Apply");
     lv_msgbox_add_footer_button(msgbox, "Close");
     lv_msgbox_add_header_button(msgbox, LV_SYMBOL_AUDIO);
@@ -88,7 +87,6 @@ void test_msgbox_get_title(void)
     msgbox = lv_msgbox_create(active_screen);
     lv_msgbox_add_title(msgbox, "The title");
     lv_msgbox_add_text(msgbox, "The text");
-    lv_msgbox_add_text_fmt(msgbox, "The %s text", "fmt");
     lv_msgbox_add_footer_button(msgbox, "Apply");
     lv_msgbox_add_footer_button(msgbox, "Close");
     lv_msgbox_add_header_button(msgbox, LV_SYMBOL_AUDIO);
@@ -111,7 +109,6 @@ void test_msgbox_close(void)
 {
     msgbox = lv_msgbox_create(active_screen);
     lv_msgbox_add_text(msgbox, "The text");
-    lv_msgbox_add_text_fmt(msgbox, "The %s text", "fmt");
 
     lv_msgbox_close(msgbox);
 
@@ -123,7 +120,6 @@ void test_msgbox_close_modal(void)
 {
     msgbox = lv_msgbox_create(NULL);
     lv_msgbox_add_text(msgbox, "The text");
-    lv_msgbox_add_text_fmt(msgbox, "The %s text", "fmt");
 
     lv_msgbox_close(msgbox);
 
@@ -135,7 +131,6 @@ void test_msgbox_close_async(void)
 {
     msgbox = lv_msgbox_create(active_screen);
     lv_msgbox_add_text(msgbox, "The text");
-    lv_msgbox_add_text_fmt(msgbox, "The %s text", "fmt");
 
     // lv_msgbox_close deletes the message box
     TEST_ASSERT_NOT_NULL(msgbox);
@@ -145,7 +140,6 @@ void test_msgbox_close_async_modal(void)
 {
     msgbox = lv_msgbox_create(NULL);
     lv_msgbox_add_text(msgbox, "The text");
-    lv_msgbox_add_text_fmt(msgbox, "The %s text", "fmt");
 
     // lv_msgbox_close deletes the message box
     TEST_ASSERT_NOT_NULL(msgbox);
@@ -157,7 +151,6 @@ void test_msgbox_content_auto_height(void)
     msgbox = lv_msgbox_create(NULL);
     lv_msgbox_add_title(msgbox, "The title");
     lv_msgbox_add_text(msgbox, "The text");
-    lv_msgbox_add_text_fmt(msgbox, "The %s text", "fmt");
     lv_msgbox_add_footer_button(msgbox, "Apply");
     lv_msgbox_add_footer_button(msgbox, "Close");
     lv_msgbox_add_header_button(msgbox, LV_SYMBOL_AUDIO);

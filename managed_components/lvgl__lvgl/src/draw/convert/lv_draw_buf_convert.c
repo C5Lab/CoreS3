@@ -7,7 +7,6 @@
  *      INCLUDES
  *********************/
 #include "lv_draw_buf_convert.h"
-#include "../../misc/lv_profiler.h"
 
 #if LV_USE_DRAW_SW_ASM == LV_DRAW_SW_ASM_NEON
     #include "neon/lv_draw_buf_convert_neon.h"
@@ -55,7 +54,6 @@
 
 lv_result_t lv_draw_buf_convert_premultiply(lv_draw_buf_t * draw_buf)
 {
-    LV_PROFILER_DRAW_BEGIN;
     LV_ASSERT_NULL(draw_buf);
 
     /*Premultiply color with alpha, do case by case by judging color format*/
@@ -121,12 +119,12 @@ lv_result_t lv_draw_buf_convert_premultiply(lv_draw_buf_t * draw_buf)
             }
         }
     }
+    else if(LV_COLOR_FORMAT_IS_ALPHA_ONLY(cf)) {
+        /*Pass*/
+    }
     else {
-        LV_LOG_WARN("color format: %d not supported for premultiply", cf);
-        LV_PROFILER_DRAW_END;
-        return LV_RESULT_INVALID;
+        LV_LOG_WARN("draw buf has no alpha, cf: %d", cf);
     }
 
-    LV_PROFILER_DRAW_END;
     return LV_RESULT_OK;
 }

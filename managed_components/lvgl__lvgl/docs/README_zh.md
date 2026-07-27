@@ -52,33 +52,33 @@
 **免费与可移植性**
   - 纯 C（兼容 C++）库，无外部依赖。
   - 可为任意 MCU 或 MPU 编译，支持任何 (RT)OS。支持 Make、CMake 和简单文件匹配。
-  - 支持单色、电子墨水、OLED、TFT 显示器，甚至是 PC 显示器。详见 [显示模块](https://docs.lvgl.io/master/main-modules/display/index.html)
+  - 支持单色、电子墨水、OLED、TFT 显示器，甚至是 PC 显示器。详见 [显示模块](https://docs.lvgl.io/master/details/main-modules/display/index.html)
   - 采用 MIT 许可证，可自由用于商业项目。
   - 仅需 32kB RAM、128kB Flash、一个帧缓冲区，以及至少 1/10 屏幕大小的渲染缓冲。
   - 支持但不强制要求使用操作系统、外部存储或 GPU。
 
 **控件、样式、布局等**
-  - 超过 30 个内置 [控件](https://docs.lvgl.io/master/widgets/index.html)：按钮、标签、滑块、图表、键盘、仪表、弧形、表格等。
-  - 灵活的 [样式系统](https://docs.lvgl.io/master/common-widget-features/styles/index.html)，提供约 100 种属性，可自定义控件任意部分与状态。
-  - [Flexbox](https://docs.lvgl.io/master/common-widget-features/layouts/flex.html) 和 [Grid](https://docs.lvgl.io/master/common-widget-features/layouts/grid.html) 布局引擎可实现自适应布局。
+  - 超过 30 个内置 [控件](https://docs.lvgl.io/master/details/widgets/index.html)：按钮、标签、滑块、图表、键盘、仪表、弧形、表格等。
+  - 灵活的 [样式系统](https://docs.lvgl.io/master/details/common-widget-features/styles/index.html)，提供约 100 种属性，可自定义控件任意部分与状态。
+  - [Flexbox](https://docs.lvgl.io/master/details/common-widget-features/layouts/flex.html) 和 [Grid](https://docs.lvgl.io/master/details/common-widget-features/layouts/grid.html) 布局引擎可实现自适应布局。
   - 文本支持 UTF-8 编码，兼容中日韩、泰语、印地语、阿拉伯语、波斯语等。
-  - [数据绑定](https://docs.lvgl.io/master/main-modules/observer/index.html) 模块轻松连接 UI 与应用逻辑。
+  - [数据绑定](https://docs.lvgl.io/master/details/auxiliary-modules/observer/index.html) 模块轻松连接 UI 与应用逻辑。
   - 渲染引擎支持动画、抗锯齿、不透明度、平滑滚动、阴影、图像变换等。
-  - [强大的 3D 渲染引擎](https://docs.lvgl.io/master/libs/gltf.html)，可使用 OpenGL 显示 [glTF 模型](https://sketchfab.com/)。
-  - 支持鼠标、触摸板、按键、键盘、外部按钮、编码器等 [输入设备](https://docs.lvgl.io/master/main-modules/indev.html)。
-  - 支持 [多显示屏](https://docs.lvgl.io/master/main-modules/display/overview.html#how-many-displays-can-lvgl-use)。
+  - [强大的 3D 渲染引擎](https://docs.lvgl.io/master/details/libs/gltf.html)，可使用 OpenGL 显示 [glTF 模型](https://sketchfab.com/)。
+  - 支持鼠标、触摸板、按键、键盘、外部按钮、编码器等 [输入设备](https://docs.lvgl.io/master/details/main-modules/indev.html)。
+  - 支持 [多显示屏](https://docs.lvgl.io/master/details/main-modules/display/overview.html#how-many-displays-can-lvgl-use)。
 
 ## 📦️ 平台支持
 
 LVGL 无外部依赖，因此可轻松编译到任何设备，并已被多个包管理器与 RTOS 集成：
 
-- [Arduino 库](https://docs.lvgl.io/master/integration/framework/arduino.html)
+- [Arduino 库](https://docs.lvgl.io/master/details/integration/framework/arduino.html)
 - [PlatformIO 包](https://registry.platformio.org/libraries/lvgl/lvgl)
-- [Zephyr 库](https://docs.lvgl.io/master/integration/os/zephyr.html)
+- [Zephyr 库](https://docs.lvgl.io/master/details/integration/os/zephyr.html)
 - [ESP-IDF (ESP32) 组件](https://components.espressif.com/components/lvgl/lvgl)
 - [NXP MCUXpresso 组件](https://www.nxp.com/design/software/embedded-software/lvgl-open-source-graphics-library:LITTLEVGL-OPEN-SOURCE-GRAPHICS-LIBRARY)
-- [NuttX 库](https://docs.lvgl.io/master/integration/os/nuttx.html)
-- [RT-Thread RTOS](https://docs.lvgl.io/master/integration/os/rt-thread.html)
+- [NuttX 库](https://docs.lvgl.io/master/details/integration/os/nuttx.html)
+- [RT-Thread RTOS](https://docs.lvgl.io/master/details/integration/os/rt-thread.html)
 - CMSIS-Pack
 - [RIOT OS 包](https://doc.riot-os.org/group__pkg__lvgl.html#details)
 
@@ -88,10 +88,10 @@ LVGL Pro 是一套完整的工具，用于高效构建、测试、共享和交�
 
 它包含四个紧密集成的工具：
 
-1. **XML 编辑器**：LVGL Pro 的核心。桌面应用，用于通过 XML 构建组件与界面，管理数据绑定、翻译、动画、测试等。了解更多 [XML 格式](https://docs.lvgl.io/master/xml/xml/index.html) 和 [编辑器](https://docs.lvgl.io/master/xml/editor/index.html)。
+1. **XML 编辑器**：LVGL Pro 的核心。桌面应用，用于通过 XML 构建组件与界面，管理数据绑定、翻译、动画、测试等。了解更多 [XML 格式](https://docs.lvgl.io/master/details/xml/xml/index.html) 和 [编辑器](https://docs.lvgl.io/master/details/xml/editor/index.html)。
 2. **在线预览器**：在浏览器中运行编辑器，打开 GitHub 项目，无需搭建开发环境即可共享。访问 [https://viewer.lvgl.io](https://viewer.lvgl.io)。
-3. **CLI 工具**：在 CI/CD 中生成 C 代码并运行测试。详见 [此处](https://docs.lvgl.io/master/xml/tools/cli.html)。
-4. **Figma 插件**：直接从 Figma 同步和提取样式。了解更多 [这里](https://docs.lvgl.io/master/xml/tools/figma.html)。
+3. **CLI 工具**：在 CI/CD 中生成 C 代码并运行测试。详见 [此处](https://docs.lvgl.io/master/details/xml/tools/cli.html)。
+4. **Figma 插件**：直接从 Figma 同步和提取样式。了解更多 [这里](https://docs.lvgl.io/master/details/xml/tools/figma.html)。
 
 这些工具结合在一起，帮助开发者高效构建 UI、可靠测试，并便于团队协作。
 

@@ -72,6 +72,5 @@ A round scale style simulating a compass
 
 Axis ticks and labels with scrolling on a chart
 -----------------------------------------------
-
 .. lv_example:: widgets/chart/lv_example_chart_2
   :language: c

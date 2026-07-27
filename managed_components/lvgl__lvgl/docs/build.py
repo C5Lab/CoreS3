@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """ build.py -- Generate LVGL documentation using Doxygen and Sphinx + Breathe.
 
+Synopsis
+--------
+    - $ python build.py html  [ skip_api ] [ fresh_env ]
+    - $ python build.py latex [ skip_api ] [ fresh_env ]
+    - $ python build.py intermediate  [ skip_api ]
+    - $ python build.py clean
+    - $ python build.py clean_intermediate
+    - $ python build.py clean_html
+    - $ python build.py clean_latex
+
+    Build Arguments and Clean Arguments can be used one at a time
+    or be freely mixed and combined.
+
 Data Flow
 ---------
 
@@ -21,18 +34,17 @@ Data Flow
     - make htmlhelp
     - etc.
 
-
 Description
 -----------
     Copy source files to an intermediate directory and modify them there before
     doc generation occurs.  If a full rebuild is being done (e.g. after a `clean`)
-    run Doxygen on LVGL's source files to generate intermediate API information
+    run Doxygen LVGL's source files to generate intermediate API information
     in XML format.  Generate API documents for Breathe's consumption.  Add API
     links to end of some documents.  Generate example documents.  From there,
     Sphinx with Breathe extension uses the resulting set of intermediate files
     to generate the desired output.
 
-    It is only during this first build that the `--skip-api` option has meaning.
+    It is only during this first build that the `skip_api` option has meaning.
     After the first build, no further actions is taken regarding API pages since
     they are not regenerated after the first build.
 
@@ -47,7 +59,7 @@ Description
     Caution:
 
     The document build meant for end-user consumption should ONLY be done after a
-    `--clean` unless you know that no API documentation and no code examples have changed.
+    `clean` unless you know that no API documentation and no code examples have changed.
 
     A `sphinx-build` will do a full doc rebuild any time:
 
@@ -56,84 +68,59 @@ Description
       HTML or Latex files, even if nothing changed),
     - the targeted output directory doesn't exist or is empty, or
     - Sphinx determines that a full rebuild is necessary.  This happens when:
-        - intermediate directory path (Sphinx's source-file path) has changed,
+        - intermediate directory (Sphinx's source-file path) has changed,
         - any options on the `sphinx-build` command line have changed,
         - `conf.py` modification date has changed, or
-        - `--fresh-env` argument is included (runs `sphinx-build` with -E option).
+        - `fresh_env` argument is included (runs `sphinx-build` with -E option).
 
     Typical run time:
 
     Full build:  22.5 min
-    --skip-api:   1.9 min  (applies to first build only)
-
-
-Usage
------
-    usage: build.py [-h] [-s] [-E]
-                    {html,latex,intermediate,clean,clean-intermediate,clean-html,clean-latex}
-                    [{html,latex,intermediate,clean,clean-intermediate,clean-html,clean-latex} ...]
-
-    Build LVGL documents
-
-    positional arguments:
-      {html,latex,intermediate,clean,clean-intermediate,clean-html,clean-latex}
-                            output targets to generate; one or more of these;
-                              `clean...` targets are completed first
-
-    options:
-      -h, --help            show this help message and exit
-      -s, --skip-api        skip API-page generation
-      -E, --fresh-env       rebuild Sphinx environment
-
+    skip_api  :   1.9 min  (applies to first build only)
 
 Options
 -------
-    --help
+    help
         Print usage note and exit with status 0.
 
-  Targets:
-
-    html [ --skip-api ] [ --fresh-env ]
+    html [ skip_api ] [ fresh_env ]
         Build HTML output.
-        `--skip-api` only has effect on first build after a `clean` or `clean_intermediate`.
+        `skip_api` only has effect on first build after a `clean` or `clean_intermediate`.
 
-    latex [ --skip-api ] [ --fresh-env ]
+    latex [ skip_api ] [ fresh_env ]
         Build Latex/PDF output (on hold pending removal of non-ASCII characters from input files).
-        `--skip-api` only has effect on first build after a `clean` or `clean_intermediate`.
+        `skip_api` only has effect on first build after a `clean` or `clean_intermediate`.
 
-    intermediate [ --skip-api ]
+    intermediate [ skip_api ]
         Generate intermediate directory contents (ready to build output formats).
         If they already exist, they are removed and re-generated.
         Note:  "intermediate" can be abbreviated down to "int".
 
-    clean
-        Remove all generated files.
-
-    clean-intermediate
-        Remove intermediate directory.
-        Note:  "clean_intermediate" can be abbreviated down to "clean_int".
-
-    clean-html
-        Remove HTML output directory.
-
-    clean-latex
-        Remove Latex output directory.
-
-  Options with Output Targets:
-
-    --skip-api (-s) (with `html` and/or `latex` and/or `intermediate` options)
+    skip_api (with `html` and/or `latex` and/or `intermediate` options)
         Skip API pages and links when intermediate directory contents are being generated
         (saving about 91% of build time).  Note: they are not thereafter regenerated unless
         requested by `intermediate` argument or the intermediate directory does not
         exist.  This is intended to be used only during doc development to speed up
         turn-around time between doc modifications and seeing final results.
 
-    --fresh-env (-E) (with `html` and/or `latex` options)
+    fresh_env (with `html` and/or `latex` options)
         Run `sphinx-build` with -E command-line argument, which makes it regenerate its
         "environment" (memory of what was built previously, forcing a full rebuild).
 
-    Unrecognized arguments print error message, usage note, and exit with status 1.
+    clean
+        Remove all generated files.
 
+    clean_intermediate
+        Remove intermediate directory.
+        Note:  "clean_intermediate" can be abbreviated down to "clean_int".
+
+    clean_html
+        Remove HTML output directory.
+
+    clean_latex
+        Remove Latex output directory.
+
+    Unrecognized arguments print error message, usage note, and exit with status 1.
 
 Python Package Requirements
 ---------------------------
@@ -142,7 +129,6 @@ Python Package Requirements
     Install them by:
 
     $ pip install -r requirements.txt
-
 
 History
 -------
@@ -156,7 +142,7 @@ History
 
     to generate the LVGL document tree.  Internally, Sphinx uses `breathe`
     (a Sphinx extension) to provide a bridge between Doxygen XML output and
-    Sphinx documentation.  It also supported a command-line option `--clean`
+    Sphinx documentation.  It also supported a command-line option `clean`
     to remove generated files before starting (eliminates orphan files,
     for docs that have moved or changed).
 
@@ -164,8 +150,8 @@ History
 
     - Using environment variables to convey branch names to several more
       places where they are used in the docs-generating process (instead
-      of re-writing `conf.py` and a `header.rst` each time docs were
-      generated).  These are documented where they generated below.
+      of re-writing writing `conf.py` and a `header.rst` each time docs
+      were generated).  These are documented where they generated below.
 
     - Supporting additional command-line options.
 
@@ -177,14 +163,13 @@ History
 
     - Adding translation and API links (requiring generating docs in an
       intermediate directory so that the links could be programmatically
-      added to each document before Sphinx was run).  Note:  translation links
+      added to each document before Sphinx was run).  Note:  translation link
       are now done manually since they are only on the main landing page.
 
-    - Generating EXAMPLES page.  Specific example groups are added to individual
-      documents by each document having an ``.. include:: /examples/.../index.rst``
-      directive where the example(s) should go.
+    - Generating EXAMPLES page + sub-examples where applicable to individual
+      documents, e.g. to widget-, style-, layout-pages, etc.
 
-    - Building PDF via latex.
+    - Building PDF via latex (when working).
 
     - Shifting doc-generation paradigm to behave more like `make`.
 
@@ -203,7 +188,6 @@ import os
 import subprocess
 import shutil
 import dirsync
-import argparse
 from datetime import datetime
 
 # LVGL Custom
@@ -234,16 +218,25 @@ cfg_lv_version_filename = 'lv_version.h'
 cfg_doxyfile_filename = 'Doxyfile'
 cfg_top_index_filename = 'index.rst'
 cfg_default_branch = 'master'
-cfg_target_html = 'html'
-cfg_target_latex = 'latex'
-cfg_target_intermediate = 'intermediate'
-cfg_target_clean_all = 'clean'
-cfg_target_clean_intermediate = 'clean-intermediate'
-cfg_target_clean_html = 'clean-html'
-cfg_target_clean_latex = 'clean-latex'
 
 # Filename generated in `latex_output_dir` and copied to `pdf_output_dir`.
 cfg_pdf_filename = 'LVGL.pdf'
+
+
+def print_usage_note():
+    """Print usage note."""
+    print('Usage:')
+    print('  $ python build.py [optional_arg ...]')
+    print()
+    print('  where `optional_arg` can be any of these:')
+    print('    html  [ skip_api ] [ fresh_env ]')
+    print('    latex [ skip_api ] [ fresh_env ]')
+    print('    intermediate  [ skip_api ]')
+    print('    clean')
+    print('    clean_intermediate')
+    print('    clean_html')
+    print('    clean_latex')
+    print('    help')
 
 
 def remove_dir(tgt_dir):
@@ -274,94 +267,119 @@ def cmd(cmd_str, start_dir=None, exit_on_error=True):
         sys.exit(1)
 
 
-def intermediate_dir_contents_exists(intermediate_dir):
+def intermediate_dir_contents_exists(dir):
     """Provide answer to question:  Can we have reasonable confidence that
     the contents of `intermediate_directory` already exists?
     """
     result = False
-    c1 = os.path.isdir(intermediate_dir)
+    c1 = os.path.isdir(dir)
 
     if c1:
-        temp_path = os.path.join(intermediate_dir, 'CHANGELOG.rst')
+        temp_path = os.path.join(dir, 'CHANGELOG.rst')
         c2 = os.path.exists(temp_path)
-        temp_path = os.path.join(intermediate_dir, '_ext')
+        temp_path = os.path.join(dir, '_ext')
         c3 = os.path.isdir(temp_path)
-        temp_path = os.path.join(intermediate_dir, '_static')
+        temp_path = os.path.join(dir, '_static')
         c4 = os.path.isdir(temp_path)
-        temp_path = os.path.join(intermediate_dir, 'debugging')
+        temp_path = os.path.join(dir, 'details')
         c5 = os.path.isdir(temp_path)
-        temp_path = os.path.join(intermediate_dir, 'introduction')
+        temp_path = os.path.join(dir, 'intro')
         c6 = os.path.isdir(temp_path)
-        temp_path = os.path.join(intermediate_dir, 'contributing')
+        temp_path = os.path.join(dir, 'contributing')
         c7 = os.path.isdir(temp_path)
-        temp_path = os.path.join(intermediate_dir, cfg_examples_dir)
+        temp_path = os.path.join(dir, cfg_examples_dir)
         c8 = os.path.isdir(temp_path)
         result = c2 and c3 and c4 and c5 and c6 and c7 and c8
 
     return result
 
 
-def run():
+def run(args):
     """Perform doc-build function(s) requested."""
+
+    # ---------------------------------------------------------------------
+    # Set default settings.
+    # ---------------------------------------------------------------------
+    build_html = False
+    build_latex = False
+    build_intermediate = False
+    skip_api = False
+    fresh_sphinx_env = False
+    clean_all = False
+    clean_intermediate = False
+    clean_html = False
+    clean_latex = False
 
     def print_setting(setting_name, val):
         """Print one setting; used for debugging."""
         announce(__file__, f'{setting_name:18} = [{val}]')
 
-    def print_settings(args, and_exit: bool):
-        """Print all settings and optionally exit; used for debugging.
-
-        This routine has proven useful for verification and validation,
-        and is being kept for future debugging purposes.
-        """
-        # Targets
-        print_setting("build_html", cfg_target_html in args.targets)
-        print_setting("build_latex", cfg_target_latex in args.targets)
-        print_setting("build_intermediate", cfg_target_intermediate in args.targets)
-        print_setting("clean_all", cfg_target_clean_all in args.targets)
-        print_setting("clean_intermediate", cfg_target_clean_intermediate in args.targets)
-        print_setting("clean_html", cfg_target_clean_html in args.targets)
-        print_setting("clean_latex", cfg_target_clean_latex in args.targets)
-        # Options
-        print_setting("skip_api", args.skip_api)
-        print_setting("fresh_sphinx_env", args.fresh_sphinx_env)
+    def print_settings(and_exit):
+        """Print all settings and optionally exit; used for debugging."""
+        print_setting("build_html", build_html)
+        print_setting("build_latex", build_latex)
+        print_setting("build_intermediate", build_intermediate)
+        print_setting("skip_api", skip_api)
+        print_setting("fresh_sphinx_env", fresh_sphinx_env)
+        print_setting("clean_all", clean_all)
+        print_setting("clean_intermediate", clean_intermediate)
+        print_setting("clean_html", clean_html)
+        print_setting("clean_latex", clean_latex)
 
         if and_exit:
             exit(0)
 
     # ---------------------------------------------------------------------
-    # Process command-line args.
+    # Process args.
     # ---------------------------------------------------------------------
-    ap = argparse.ArgumentParser(description='Build LVGL documents')
-    ap.add_argument('targets', nargs='+', choices=[
-            cfg_target_html,
-            cfg_target_latex,
-            cfg_target_intermediate,
-            cfg_target_clean_all,
-            cfg_target_clean_intermediate,
-            cfg_target_clean_html,
-            cfg_target_clean_latex,
-            ],
-            help='output targets to generate; one or more of these;\n`clean...` targets are completed first')
 
-    ap.add_argument('-s', '--skip-api' , action='store_true', dest='skip_api',
-                help='skip API-page generation'     )
-    ap.add_argument('-E', '--fresh-env', action='store_true', dest='fresh_sphinx_env',
-                help='rebuild Sphinx environment'   )
-    args = ap.parse_args()
+    # No args means print usage note and exit with status 0.
+    if len(args) == 0:
+        print_usage_note()
+        exit(0)
 
-    if cfg_target_clean_all in args.targets:
-        if cfg_target_clean_intermediate not in args.targets:
-            args.targets.append(cfg_target_clean_intermediate)
-        if cfg_target_clean_html not in args.targets:
-            args.targets.append(cfg_target_clean_html)
-        if cfg_target_clean_latex not in args.targets:
-            args.targets.append(cfg_target_clean_latex)
+    # Some args are present.  Interpret them in loop here.
+    # Unrecognized arg means print error, print usage note, exit with status 1.
+    for arg in args:
+        # We use chained `if-elif-else` instead of `match` for those on Linux
+        # systems that will not have the required version 3.10 of Python yet.
+        if arg == 'help':
+            print_usage_note()
+            exit(0)
+        elif arg == "html":
+            build_html = True
+        elif arg == "latex":
+            build_latex = True
+        elif "intermediate".startswith(arg) and len(arg) >= 3:
+            # Accept abbreviations.
+            build_intermediate = True
+        elif arg == 'skip_api':
+            skip_api = True
+        elif arg == 'fresh_env':
+            fresh_sphinx_env = True
+        elif arg == "clean":
+            clean_all = True
+            clean_intermediate = True
+            clean_html = True
+            clean_latex = True
+        elif arg == "clean_html":
+            clean_html = True
+        elif arg == "clean_latex":
+            clean_latex = True
+        elif "clean_intermediate".startswith(arg) and len(arg) >= 9:
+            # Accept abbreviations.
+            # Needs to be after others so "cl" will not
+            clean_intermediate = True
+        else:
+            print(f'Argument [{arg}] not recognized.')
+            print()
+            print_usage_note()
+            exit(2)  # 2 = customary Unix command-line syntax error.
 
     # '-E' option forces Sphinx to rebuild its environment so all docs are
     # fully regenerated, even if not changed.
     # Note:  Sphinx runs in ./docs/, but uses `intermediate_dir` for input.
-    if args.fresh_sphinx_env:
+    if fresh_sphinx_env:
         announce(__file__, "Force-regenerating all files...")
         env_opt = '-E'
     else:
@@ -394,7 +412,6 @@ def run():
         intermediate_dir = os.path.join(base_dir, cfg_default_intermediate_dir)
 
     lv_conf_file = os.path.join(intermediate_dir, cfg_lv_conf_filename)
-    lv_temp_conf_file_for_doxygen = os.path.join(lvgl_src_dir, cfg_lv_conf_filename)
     version_dst_file = os.path.join(intermediate_dir, cfg_lv_version_filename)
     top_index_file = os.path.join(intermediate_dir, cfg_top_index_filename)
     doxyfile_src_file = os.path.join(base_dir, cfg_doxyfile_filename)
@@ -449,31 +466,25 @@ def run():
     # ---------------------------------------------------------------------
     # Clean?  If so, clean (like `make clean`), but do not exit.
     # ---------------------------------------------------------------------
-    some_cleaning_to_be_done = cfg_target_clean_intermediate in args.targets \
-            or cfg_target_clean_html in args.targets \
-            or cfg_target_clean_latex in args.targets \
-            or cfg_target_clean_all in args.targets \
-            or ( \
-                os.path.isdir(intermediate_dir) \
-                and cfg_target_intermediate in args.targets \
-            )
+    some_cleaning_to_be_done = clean_intermediate or clean_html or clean_latex \
+        or clean_all or (os.path.isdir(intermediate_dir) and build_intermediate)
 
     if some_cleaning_to_be_done:
         announce(__file__, "Cleaning...", box=True)
 
-        if cfg_target_clean_intermediate in args.targets:
+        if clean_intermediate:
             remove_dir(intermediate_dir)
 
-        if cfg_target_clean_html in args.targets:
+        if clean_html:
             remove_dir(html_output_dir)
 
-        if cfg_target_clean_latex in args.targets:
+        if clean_latex:
             remove_dir(latex_output_dir)
 
-        if cfg_target_clean_all in args.targets:
+        if clean_all:
             remove_dir(output_dir)
 
-        if os.path.isdir(intermediate_dir) and cfg_target_intermediate in args.targets:
+        if os.path.isdir(intermediate_dir) and build_intermediate:
             remove_dir(intermediate_dir)
 
     # ---------------------------------------------------------------------
@@ -556,7 +567,7 @@ def run():
         # action == 'update' means DO NOT copy files when they do not already exist in tgt dir.
         dirsync.sync(cfg_doc_src_dir, intermediate_dir, 'sync', **options)
         dirsync.sync(examples_dir, os.path.join(intermediate_dir, cfg_examples_dir), 'sync', **options)
-    elif cfg_target_intermediate in args.targets or cfg_target_html in args.targets or cfg_target_latex in args.targets:
+    elif build_intermediate or build_html or build_latex:
         # We are having to create the intermediate_dir contents by copying.
         announce(__file__, "Building intermediate directory...", box=True)
 
@@ -588,10 +599,6 @@ def run():
         # Build <intermediate_dir>/lv_conf.h from lv_conf_template.h.
         # -----------------------------------------------------------------
         config_builder.run(lv_conf_file)
-        # Build a temporary version of this file in ../src/ so Doxygen can see it.
-        # Reason:  Doxygen's input is the master `lvgl/src/` directory,
-        # not the intermediate directory.  This file gets deleted later.
-        config_builder.run(lv_temp_conf_file_for_doxygen)
 
         # -----------------------------------------------------------------
         # Copy `lv_version.h` into intermediate directory.
@@ -603,7 +610,6 @@ def run():
         # in individual documents where applicable.
         # -----------------------------------------------------------------
         announce(__file__, "Generating examples...")
-        example_list.make_warnings_into_errors()
         example_list.exec(intermediate_dir)
 
         # -----------------------------------------------------------------
@@ -618,7 +624,7 @@ def run():
         #     announce(__file__, "Adding translation links...")
         #     add_translation.exec(intermediate_dir)
 
-        if args.skip_api:
+        if skip_api:
             announce(__file__, "Skipping API generation as requested.")
         else:
             # -------------------------------------------------------------
@@ -636,32 +642,17 @@ def run():
             api_doc_builder.build_api_docs(lvgl_src_dir,
                                            intermediate_dir,
                                            doxyfile_src_file,
-                                           'auxiliary-modules',
-                                           'common-widget-features',
-                                           'contributing',
-                                           'debugging',
-                                           'getting_started',
-                                           'guides',
-                                           'integration',
-                                           'introduction',
-                                           'libs',
-                                           'main-modules',
-                                           'widgets',
-                                           'xml',
+                                           'details',
+                                           'intro'
                                            )
 
-        # Now that Doxygen has run, this file is no longer needed.
-        # Clean up now rather than later to keep logic clean.
-        os.remove(lv_temp_conf_file_for_doxygen)
-
-        # Note time when this stage completed.
         t2 = datetime.now()
         announce(__file__, 'Example/API run time:  ' + str(t2 - t1))
 
     # ---------------------------------------------------------------------
     # Build PDF
     # ---------------------------------------------------------------------
-    if cfg_target_latex not in args.targets:
+    if not build_latex:
         announce(__file__, "Skipping Latex build.")
     else:
         t1 = datetime.now()
@@ -708,7 +699,7 @@ def run():
     # ---------------------------------------------------------------------
     # Build HTML
     # ---------------------------------------------------------------------
-    if cfg_target_html not in args.targets:
+    if not build_html:
         announce(__file__, "Skipping HTML build.")
     else:
         t1 = datetime.now()
@@ -785,4 +776,4 @@ def run():
 
 if __name__ == '__main__':
     """Make module importable as well as run-able."""
-    run()
+    run(sys.argv[1:])

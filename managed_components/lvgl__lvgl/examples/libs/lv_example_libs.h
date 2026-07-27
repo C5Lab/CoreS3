@@ -26,7 +26,6 @@ extern "C" {
 #include "rlottie/lv_example_rlottie.h"
 #include "tjpgd/lv_example_tjpgd.h"
 #include "libjpeg_turbo/lv_example_libjpeg_turbo.h"
-#include "libwebp/lv_example_libwebp.h"
 #include "tiny_ttf/lv_example_tiny_ttf.h"
 #include "svg/lv_example_svg.h"
 

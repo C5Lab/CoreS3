@@ -1,5 +1,3 @@
-.. example_heading: Grid Navigation
-
 
 Basic grid navigation
 ---------------------

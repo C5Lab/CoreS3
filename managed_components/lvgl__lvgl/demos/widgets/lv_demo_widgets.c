@@ -58,17 +58,9 @@ lv_obj_t * tv;
 
 void lv_demo_widgets(void)
 {
-    lv_demo_args_t args;
-    lv_demo_args_init(&args);
-    lv_demo_widgets_with_args(&args);
-}
-
-void lv_demo_widgets_with_args(const lv_demo_args_t * args)
-{
-    LV_ASSERT_NULL(args);
-
     lv_demo_widgets_components_init();
-    tv = lv_tabview_create(args->parent);
+
+    tv = lv_tabview_create(lv_screen_active());
     lv_tabview_set_tab_bar_size(tv, disp_size == DISP_LARGE ? 75 : 45);
     lv_obj_add_event_cb(tv, tabview_delete_event_cb, LV_EVENT_DELETE, NULL);
 

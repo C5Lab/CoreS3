@@ -1,8 +1,5 @@
 #include "../../lv_examples.h"
-
-#if LV_BUILD_EXAMPLES
-
-#if LV_USE_TINY_TTF && LV_TINY_TTF_FILE_SUPPORT
+#if LV_USE_TINY_TTF && LV_TINY_TTF_FILE_SUPPORT && LV_BUILD_EXAMPLES
 
 /**
  * Load a font with Tiny_TTF from file
@@ -22,18 +19,4 @@ void lv_example_tiny_ttf_2(void)
     lv_label_set_text(label, "Hello world\nI'm a font\ncreated\nwith Tiny TTF");
     lv_obj_center(label);
 }
-#else
-
-void lv_example_tiny_ttf_2(void)
-{
-    /*TODO
-     *fallback for online examples*/
-
-    lv_obj_t * label = lv_label_create(lv_screen_active());
-    lv_label_set_text(label, "TinyTTF can't load files in the browser");
-    lv_obj_center(label);
-}
-
-#endif /*LV_USE_TINY_TTF && LV_TINY_TTF_FILE_SUPPORT*/
-
-#endif /*LV_BUILD_EXAMPLES*/
+#endif

@@ -47,33 +47,33 @@
 **無料でポータブル**
   - 外部依存のない完全な C（C++ 互換）ライブラリ。
   - あらゆる MCU / MPU、任意の (RT)OS に対応。Make、CMake、glob 構文をサポート。
-  - モノクロ、電子ペーパー、OLED、TFT、さらにはモニターにも対応。[ディスプレイ](https://docs.lvgl.io/master/main-modules/display/index.html)
+  - モノクロ、電子ペーパー、OLED、TFT、さらにはモニターにも対応。[ディスプレイ](https://docs.lvgl.io/master/details/main-modules/display/index.html)
   - MIT ライセンスで商用利用も簡単。
   - 必要リソースはわずか 32kB RAM、128kB フラッシュ、フレームバッファ、および画面の 1/10 の描画バッファ。
   - OS、外部メモリ、GPU の使用は任意。
 
 **ウィジェット・スタイル・レイアウトなど**
-  - 30 以上の [ウィジェット](https://docs.lvgl.io/master/widgets/index.html)：ボタン、ラベル、スライダー、チャート、キーボード、メーター、アーク、テーブルなど。
-  - 約 100 のプロパティを持つ柔軟な [スタイルシステム](https://docs.lvgl.io/master/common-widget-features/styles/index.html)。
-  - [Flexbox](https://docs.lvgl.io/master/common-widget-features/layouts/flex.html)、[Grid](https://docs.lvgl.io/master/common-widget-features/layouts/grid.html) レイアウトエンジンによる自動配置。
+  - 30 以上の [ウィジェット](https://docs.lvgl.io/master/details/widgets/index.html)：ボタン、ラベル、スライダー、チャート、キーボード、メーター、アーク、テーブルなど。
+  - 約 100 のプロパティを持つ柔軟な [スタイルシステム](https://docs.lvgl.io/master/details/common-widget-features/styles/index.html)。
+  - [Flexbox](https://docs.lvgl.io/master/details/common-widget-features/layouts/flex.html)、[Grid](https://docs.lvgl.io/master/details/common-widget-features/layouts/grid.html) レイアウトエンジンによる自動配置。
   - UTF-8 文字レンダリング。CJK、タイ語、ヒンディー語、アラビア語、ペルシャ語などをサポート。
-  - [データバインディング](https://docs.lvgl.io/master/main-modules/observer/index.html) により、UI とアプリケーションを簡単に接続。
+  - [データバインディング](https://docs.lvgl.io/master/details/auxiliary-modules/observer/index.html) により、UI とアプリケーションを簡単に接続。
   - レンダリングエンジンはアニメーション、アンチエイリアス、不透明度、スムーズスクロール、影、画像変換をサポート。
-  - [3D レンダリングエンジン](https://docs.lvgl.io/master/libs/gltf.html) により [glTF モデル](https://sketchfab.com/) を OpenGL で表示可能。
-  - マウス、タッチパッド、キー入力、外部ボタン、エンコーダなどに対応。[入力デバイス](https://docs.lvgl.io/master/main-modules/indev.html)
-  - [マルチディスプレイ](https://docs.lvgl.io/master/main-modules/display/overview.html#how-many-displays-can-lvgl-use) をサポート。
+  - [3D レンダリングエンジン](https://docs.lvgl.io/master/details/libs/gltf.html) により [glTF モデル](https://sketchfab.com/) を OpenGL で表示可能。
+  - マウス、タッチパッド、キー入力、外部ボタン、エンコーダなどに対応。[入力デバイス](https://docs.lvgl.io/master/details/main-modules/indev.html)
+  - [マルチディスプレイ](https://docs.lvgl.io/master/details/main-modules/display/overview.html#how-many-displays-can-lvgl-use) をサポート。
 
 ## 📦️ 対応プラットフォーム
 
 LVGL は外部依存がなく、さまざまなデバイスで簡単にビルドでき、主要なパッケージマネージャや RTOS にも統合されています：
 
-- [Arduino ライブラリ](https://docs.lvgl.io/master/integration/framework/arduino.html)
+- [Arduino ライブラリ](https://docs.lvgl.io/master/details/integration/framework/arduino.html)
 - [PlatformIO パッケージ](https://registry.platformio.org/libraries/lvgl/lvgl)
-- [Zephyr ライブラリ](https://docs.lvgl.io/master/integration/os/zephyr.html)
+- [Zephyr ライブラリ](https://docs.lvgl.io/master/details/integration/os/zephyr.html)
 - [ESP-IDF (ESP32) コンポーネント](https://components.espressif.com/components/lvgl/lvgl)
 - [NXP MCUXpresso コンポーネント](https://www.nxp.com/design/software/embedded-software/lvgl-open-source-graphics-library:LITTLEVGL-OPEN-SOURCE-GRAPHICS-LIBRARY)
-- [NuttX ライブラリ](https://docs.lvgl.io/master/integration/os/nuttx.html)
-- [RT-Thread RTOS](https://docs.lvgl.io/master/integration/os/rt-thread.html)
+- [NuttX ライブラリ](https://docs.lvgl.io/master/details/integration/os/nuttx.html)
+- [RT-Thread RTOS](https://docs.lvgl.io/master/details/integration/os/rt-thread.html)
 - CMSIS-Pack
 - [RIOT OS パッケージ](https://doc.riot-os.org/group__pkg__lvgl.html#details)
 
@@ -83,10 +83,10 @@ LVGL Pro は、組込み UI を効率的に構築・テスト・共有・出荷�
 
 以下の 4 つのツールで構成されています：
 
-1. **XML エディター**：LVGL Pro の中心。XML でコンポーネントや画面を作成し、データバインディング、翻訳、アニメーション、テストなどを管理。詳細は [XML フォーマット](https://docs.lvgl.io/master/xml/xml/index.html) および [エディター](https://docs.lvgl.io/master/xml/editor/index.html)。
+1. **XML エディター**：LVGL Pro の中心。XML でコンポーネントや画面を作成し、データバインディング、翻訳、アニメーション、テストなどを管理。詳細は [XML フォーマット](https://docs.lvgl.io/master/details/xml/xml/index.html) および [エディター](https://docs.lvgl.io/master/details/xml/editor/index.html)。
 2. **オンラインビューア**：ブラウザでエディターを実行し、GitHub プロジェクトを開いて簡単に共有。環境構築は不要。アクセス：[https://viewer.lvgl.io](https://viewer.lvgl.io)
-3. **CLI ツール**：C コードの生成や CI/CD テストを自動化。詳細は [こちら](https://docs.lvgl.io/master/xml/tools/cli.html)。
-4. **Figma プラグイン**：Figma から直接スタイルを同期・抽出。[詳細はこちら](https://docs.lvgl.io/master/xml/tools/figma.html)。
+3. **CLI ツール**：C コードの生成や CI/CD テストを自動化。詳細は [こちら](https://docs.lvgl.io/master/details/xml/tools/cli.html)。
+4. **Figma プラグイン**：Figma から直接スタイルを同期・抽出。[詳細はこちら](https://docs.lvgl.io/master/details/xml/tools/figma.html)。
 
 これらのツールを組み合わせることで、開発者は効率的に UI を構築し、信頼性の高いテストとチームコラボレーションを実現できます。
 

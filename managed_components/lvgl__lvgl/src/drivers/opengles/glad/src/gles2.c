@@ -1,8 +1,7 @@
 /**
  * SPDX-License-Identifier: (WTFPL OR CC0-1.0) AND Apache-2.0
  */
-
-#include "../../lv_opengles_private.h"
+#include "../../lv_opengles_egl.h"
 
 #if LV_USE_EGL
 

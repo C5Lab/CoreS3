@@ -47,33 +47,33 @@
 **חינמית וניידת**
   - ספריית C מלאה (תואמת ++C) ללא תלות חיצונית.
   - ניתנת לקימפול לכל MCU או MPU, עם כל (RT)OS. תומכת ב־Make,‏ CMake וב־globbing פשוט.
-  - תמיכה במסכי מונוכרום, ePaper,‏ OLED או TFT, ואף במסכים של מחשבים. ראו [תצוגות](https://docs.lvgl.io/master/main-modules/display/index.html)
+  - תמיכה במסכי מונוכרום, ePaper,‏ OLED או TFT, ואף במסכים של מחשבים. ראו [תצוגות](https://docs.lvgl.io/master/details/main-modules/display/index.html)
   - רישיון MIT המקל על שימוש מסחרי.
   - נדרשים רק 32kB RAM ו־128kB Flash, מאגר מסגרת, ולפחות מאגר רינדור בגודל 1/10 מגודל המסך.
   - מערכת הפעלה, זיכרון חיצוני ו־GPU נתמכים אך אינם נדרשים.
 
 **וידג'טים, סגנונות, פריסות ועוד**
-  - יותר מ־30 [וידג'טים](https://docs.lvgl.io/master/widgets/index.html) מובנים: Button, Label, Slider, Chart, Keyboard, Meter, Arc, Table ועוד רבים.
-  - [מערכת סגנונות](https://docs.lvgl.io/master/common-widget-features/styles/index.html) גמישה עם כ~100 מאפייני עיצוב להתאמה של כל חלקי הווידג'טים בכל מצב.
-  - מנועי פריסה בסגנון [Flexbox](https://docs.lvgl.io/master/common-widget-features/layouts/flex.html) ו־[Grid](https://docs.lvgl.io/master/common-widget-features/layouts/grid.html) למיקום וגודל רספונסיביים.
+  - יותר מ־30 [וידג'טים](https://docs.lvgl.io/master/details/widgets/index.html) מובנים: Button, Label, Slider, Chart, Keyboard, Meter, Arc, Table ועוד רבים.
+  - [מערכת סגנונות](https://docs.lvgl.io/master/details/common-widget-features/styles/index.html) גמישה עם כ~100 מאפייני עיצוב להתאמה של כל חלקי הווידג'טים בכל מצב.
+  - מנועי פריסה בסגנון [Flexbox](https://docs.lvgl.io/master/details/common-widget-features/layouts/flex.html) ו־[Grid](https://docs.lvgl.io/master/details/common-widget-features/layouts/grid.html) למיקום וגודל רספונסיביים.
   - טקסט מעובד בקידוד UTF-8 עם תמיכה במערכות כתיבה סינית/יפנית/קוריאנית, תאית, הינדי, ערבית ופרסית.
-  - [קישורי נתונים](https://docs.lvgl.io/master/main-modules/observer/index.html) לחיבור קל בין ה־UI ליישום.
+  - [קישורי נתונים](https://docs.lvgl.io/master/details/auxiliary-modules/observer/index.html) לחיבור קל בין ה־UI ליישום.
   - מנוע רינדור עם תמיכה באנימציות, החלקת קצוות, שקיפות, גלילה חלקה, צללים, טרנספורמציות תמונה ועוד.
-  - [מנוע רינדור 3D חזק](https://docs.lvgl.io/master/libs/gltf.html) להצגת [מודלי glTF](https://sketchfab.com/) עם OpenGL.
-  - תמיכה בעכבר, משטח מגע, לוח מקשים, מקלדת, כפתורים חיצוניים ואנקודר [התקני קלט](https://docs.lvgl.io/master/main-modules/indev.html).
-  - תמיכה ב[מסכים מרובים](https://docs.lvgl.io/master/main-modules/display/overview.html#how-many-displays-can-lvgl-use).
+  - [מנוע רינדור 3D חזק](https://docs.lvgl.io/master/details/libs/gltf.html) להצגת [מודלי glTF](https://sketchfab.com/) עם OpenGL.
+  - תמיכה בעכבר, משטח מגע, לוח מקשים, מקלדת, כפתורים חיצוניים ואנקודר [התקני קלט](https://docs.lvgl.io/master/details/main-modules/indev.html).
+  - תמיכה ב[מסכים מרובים](https://docs.lvgl.io/master/details/main-modules/display/overview.html#how-many-displays-can-lvgl-use).
 
 ## 📦️ תמיכת פלטפורמות
 
 ל־LVGL אין תלות חיצונית, ולכן ניתן לקמפל אותה בקלות לכל התקן. היא זמינה גם במנהלי חבילות רבים ובמערכות RTOS:
 
-- [ספריית Arduino](https://docs.lvgl.io/master/integration/framework/arduino.html)
+- [ספריית Arduino](https://docs.lvgl.io/master/details/integration/framework/arduino.html)
 - [חבילת PlatformIO](https://registry.platformio.org/libraries/lvgl/lvgl)
-- [ספריית Zephyr](https://docs.lvgl.io/master/integration/os/zephyr.html)
+- [ספריית Zephyr](https://docs.lvgl.io/master/details/integration/os/zephyr.html)
 - [רכיב ESP-IDF ‏(ESP32)](https://components.espressif.com/components/lvgl/lvgl)
 - [רכיב NXP MCUXpresso](https://www.nxp.com/design/software/embedded-software/lvgl-open-source-graphics-library:LITTLEVGL-OPEN-SOURCE-GRAPHICS-LIBRARY)
-- [ספריית NuttX](https://docs.lvgl.io/master/integration/os/nuttx.html)
-- [RT-Thread RTOS](https://docs.lvgl.io/master/integration/os/rt-thread.html)
+- [ספריית NuttX](https://docs.lvgl.io/master/details/integration/os/nuttx.html)
+- [RT-Thread RTOS](https://docs.lvgl.io/master/details/integration/os/rt-thread.html)
 - CMSIS-Pack
 - [חבילת RIOT OS](https://doc.riot-os.org/group__pkg__lvgl.html#details)
 
@@ -83,10 +83,10 @@ LVGL Pro הוא מארז כלים מלא לבנייה, בדיקה, שיתוף ו
 
 הוא מורכב מארבעה כלים המשולבים זה בזה:
 
-1. **עורך XML**: הלב של LVGL Pro. יישום שולחני לבניית רכיבים ומסכים ב־XML, ניהול קישורי נתונים, תרגומים, אנימציות, בדיקות ועוד. קראו עוד על [פורמט ה־XML](https://docs.lvgl.io/master/xml/xml/index.html) ועל [העורך](https://docs.lvgl.io/master/xml/editor/index.html).
+1. **עורך XML**: הלב של LVGL Pro. יישום שולחני לבניית רכיבים ומסכים ב־XML, ניהול קישורי נתונים, תרגומים, אנימציות, בדיקות ועוד. קראו עוד על [פורמט ה־XML](https://docs.lvgl.io/master/details/xml/xml/index.html) ועל [העורך](https://docs.lvgl.io/master/details/xml/editor/index.html).
 2. **מציג מקוון**: הריצו את העורך בדפדפן, פתחו פרויקטים מ־GitHub ושיתפו בקלות בלי להקים סביבת פיתוח. בקרו ב־[https://viewer.lvgl.io](https://viewer.lvgl.io).
-3. **כלי CLI**: הפקת קוד C והרצת בדיקות ב־CI/CD. פרטים [כאן](https://docs.lvgl.io/master/xml/tools/cli.html).
-4. **תוסף Figma**: סנכרון וחילוץ סגנונות ישירות מ־Figma. מידע נוסף [כאן](https://docs.lvgl.io/master/xml/tools/figma.html).
+3. **כלי CLI**: הפקת קוד C והרצת בדיקות ב־CI/CD. פרטים [כאן](https://docs.lvgl.io/master/details/xml/tools/cli.html).
+4. **תוסף Figma**: סנכרון וחילוץ סגנונות ישירות מ־Figma. מידע נוסף [כאן](https://docs.lvgl.io/master/details/xml/tools/figma.html).
 
 ביחד, הכלים מאפשרים לבנות UI ביעילות, לבדוק באמינות ולשתף פעולה עם צוותים ולקוחות.
 

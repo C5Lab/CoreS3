@@ -1,5 +1,3 @@
-.. example_heading: Window
-
 
 Simple window
 -------------

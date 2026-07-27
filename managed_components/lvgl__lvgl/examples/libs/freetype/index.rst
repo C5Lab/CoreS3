@@ -1,6 +1,3 @@
-.. example_heading: FreeType
-
-
 Create a font with FreeType
 ---------------------------
 

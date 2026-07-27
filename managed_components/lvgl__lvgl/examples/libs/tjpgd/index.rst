@@ -1,6 +1,3 @@
-.. example_heading: Tiny JPEG Decompressor (TJpgDec)
-
-
 Load a JPG image
 ------------------
 

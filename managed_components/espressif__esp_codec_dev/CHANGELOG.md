@@ -1,11 +1,5 @@
 # Changelog
 
-## v1.5.11
-
-### Bug Fixed
-
-- Fixed ADC codec build error on IDF v6.0 and master
-
 ## v1.5.10
 
 ### Bug Fixed

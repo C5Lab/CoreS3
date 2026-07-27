@@ -1,5 +1,3 @@
-.. example_heading: Base Widget
-
 
 Base objects with custom styles
 -------------------------------

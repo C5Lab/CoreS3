@@ -1,6 +1,3 @@
-.. example_heading: FFmpeg
-
-
 Decode image
 ------------
 

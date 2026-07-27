@@ -1,6 +1,3 @@
-.. example_heading: Arc Label
-
-
 Simple Arc Label
 ----------------
 

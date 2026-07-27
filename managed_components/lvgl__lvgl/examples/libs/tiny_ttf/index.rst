@@ -1,6 +1,3 @@
-.. example_heading: Tiny TTF
-
-
 Open a font with Tiny TTF from data array
 ------------------------------------------
 

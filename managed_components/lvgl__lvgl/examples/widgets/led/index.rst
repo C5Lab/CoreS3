@@ -1,5 +1,3 @@
-.. example_heading: LED
-
 
 LED with custom style
 ---------------------

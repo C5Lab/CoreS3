@@ -9,9 +9,6 @@ extern "C" {
 #include <stdio.h>
 #include <../lvgl.h>
 
-#define LV_TEST_DISPLAY_HOR_RES 800
-#define LV_TEST_DISPLAY_VER_RES 480
-
 void lv_test_init(void);
 void lv_test_deinit(void);
 

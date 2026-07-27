@@ -8,6 +8,7 @@
 #include "psram_dynarr.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -75,6 +76,7 @@ typedef enum {
 #define WD_BAND_WIFI5     0x02
 #define WD_BAND_BLE       0x04
 #define WD_CUSTOM_CH_MAX  96
+#define WD_GPS_DEBUG_LOG_SIZE 4096
 
 typedef enum {
     WD_CH_POPULAR = 0,
@@ -145,6 +147,24 @@ static lv_obj_t *wd_setup_status      = NULL;
 static lv_obj_t *wd_setup_load_btn    = NULL;
 static lv_obj_t *wd_setup_apply_btn   = NULL;
 static lv_obj_t *wd_setup_close_btn   = NULL;
+static lv_obj_t *wd_setup_gps_debug_btn = NULL;
+
+/* GPS raw-NMEA debug popup (start_gps_raw) — sub-overlay of the setup popup. */
+static lv_obj_t *wd_gps_dbg_overlay   = NULL;
+static lv_obj_t *wd_gps_dbg_fix_lbl   = NULL;
+static lv_obj_t *wd_gps_dbg_sat_lbl   = NULL;
+static lv_obj_t *wd_gps_dbg_hdop_lbl  = NULL;
+static lv_obj_t *wd_gps_dbg_presence_lbl = NULL;
+static lv_obj_t *wd_gps_dbg_antenna_lbl  = NULL;
+static lv_obj_t *wd_gps_dbg_coord_lbl = NULL;
+static lv_obj_t *wd_gps_dbg_log_box   = NULL;
+static lv_obj_t *wd_gps_dbg_log_lbl   = NULL;
+static lv_obj_t *wd_gps_dbg_start_btn = NULL;
+static lv_obj_t *wd_gps_dbg_stop_btn  = NULL;
+static lv_obj_t *wd_gps_dbg_close_btn = NULL;
+static volatile bool wd_gps_dbg_running        = false;
+static volatile bool wd_gps_dbg_stop_requested = false;
+static char *wd_gps_dbg_log = NULL;   /* PSRAM, allocated lazily on first open */
 
 static lv_timer_t *wd_gps_push_timer = NULL;
 
@@ -156,6 +176,10 @@ static void stop_gps_push_timer(void);
 static void set_status(const char *txt, lv_color_t color);
 static void update_trace_btn(void);
 static void wardrive_upload_btn_cb(lv_event_t *e);
+static void wd_gps_debug_btn_cb(lv_event_t *e);
+static void wd_gps_debug_start_cb(lv_event_t *e);
+static void wd_gps_debug_stop_cb(lv_event_t *e);
+static void wd_gps_debug_close_cb(lv_event_t *e);
 
 /* ================================================================== */
 /*  GPS fix overlay (full-screen dimmed modal)                         */
@@ -1080,6 +1104,7 @@ static void wd_setup_custom_btn_cb(lv_event_t *e)
 static void wd_setup_close(void)
 {
     if (wd_setup_applying) return;   /* never tear down while a worker runs */
+    wd_gps_debug_close_cb(NULL);     /* stop reader + free the sub-overlay */
     if (wd_setup_overlay) {
         lv_obj_del(wd_setup_overlay);
         wd_setup_overlay = NULL;
@@ -1093,6 +1118,7 @@ static void wd_setup_close(void)
     wd_setup_memcap_dd = wd_setup_antisurv_dd = NULL;
     wd_setup_status = NULL;
     wd_setup_load_btn = wd_setup_apply_btn = wd_setup_close_btn = NULL;
+    wd_setup_gps_debug_btn = NULL;
 }
 
 static void wd_setup_close_cb(lv_event_t *e)
@@ -1217,6 +1243,20 @@ static void show_wardrive_setup(void)
     lv_dropdown_set_selected(wd_setup_gps_dd, (uint16_t)wd_gps_type);
     lv_obj_set_width(wd_setup_gps_dd, 150);
     lv_obj_add_event_cb(wd_setup_gps_dd, wd_setup_gps_dd_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* GPS raw-NMEA debug / diagnostics popup */
+    wd_setup_gps_debug_btn = lv_btn_create(popup);
+    lv_obj_set_size(wd_setup_gps_debug_btn, LV_PCT(100), 28);
+    lv_obj_set_style_bg_color(wd_setup_gps_debug_btn, ui_card_color(), 0);
+    lv_obj_set_style_border_color(wd_setup_gps_debug_btn, UI_ACCENT_TEAL, 0);
+    lv_obj_set_style_border_width(wd_setup_gps_debug_btn, 1, 0);
+    lv_obj_set_style_radius(wd_setup_gps_debug_btn, 8, 0);
+    lv_obj_add_event_cb(wd_setup_gps_debug_btn, wd_gps_debug_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *gps_dbg_lbl = lv_label_create(wd_setup_gps_debug_btn);
+    lv_label_set_text(gps_dbg_lbl, LV_SYMBOL_GPS " GPS Debug (raw NMEA)");
+    lv_obj_set_style_text_color(gps_dbg_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(gps_dbg_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(gps_dbg_lbl);
 
     /* Bands */
     wd_setup_label(popup, "Bands", UI_ACCENT_CYAN);
@@ -1348,6 +1388,403 @@ static void show_wardrive_setup(void)
     /* Show local values, then refresh from device on a worker task. */
     wd_setup_sync_controls();
     wd_setup_load_cb(NULL);
+}
+
+/* ================================================================== */
+/*  Wardrive — GPS raw NMEA debug popup (ported from Tab5 main.c)       */
+/*                                                                      */
+/*  Unlike the Tab5 build (dual UART + dedicated raw-reader task) the   */
+/*  CoreS3 has a single UART with a line-callback dispatcher, so the    */
+/*  raw NMEA stream is consumed via uart_set_line_callback() instead of */
+/*  a private task.                                                     */
+/* ================================================================== */
+
+static void wd_gps_debug_set_running_controls(bool running)
+{
+    if (wd_gps_dbg_start_btn) {
+        if (running) lv_obj_add_state(wd_gps_dbg_start_btn, LV_STATE_DISABLED);
+        else         lv_obj_clear_state(wd_gps_dbg_start_btn, LV_STATE_DISABLED);
+    }
+    if (wd_gps_dbg_stop_btn) {
+        if (running) lv_obj_clear_state(wd_gps_dbg_stop_btn, LV_STATE_DISABLED);
+        else         lv_obj_add_state(wd_gps_dbg_stop_btn, LV_STATE_DISABLED);
+    }
+}
+
+/* Append a line to the PSRAM ring log and refresh the on-screen box. Called
+ * from both the LVGL thread (start echo) and the uart_rx task (NMEA stream);
+ * bsp_display_lock guards the LVGL access in either case. */
+static void wd_gps_debug_append_line(const char *line)
+{
+    if (!wd_gps_dbg_log || !line || !line[0]) return;
+
+    size_t used = strnlen(wd_gps_dbg_log, WD_GPS_DEBUG_LOG_SIZE);
+    size_t line_len = strnlen(line, 255);
+    size_t needed = line_len + 1; /* newline */
+    if (needed >= WD_GPS_DEBUG_LOG_SIZE) return;
+    if (used + needed >= WD_GPS_DEBUG_LOG_SIZE) {
+        size_t discard = used + needed - WD_GPS_DEBUG_LOG_SIZE + 1;
+        const char *next_line = memchr(wd_gps_dbg_log + discard, '\n', used - discard);
+        if (next_line) discard = (size_t)(next_line - wd_gps_dbg_log) + 1;
+        memmove(wd_gps_dbg_log, wd_gps_dbg_log + discard, used - discard + 1);
+        used -= discard;
+    }
+    memcpy(wd_gps_dbg_log + used, line, line_len);
+    used += line_len;
+    wd_gps_dbg_log[used++] = '\n';
+    wd_gps_dbg_log[used] = '\0';
+
+    bsp_display_lock(0);
+    if (wd_gps_dbg_overlay && wd_gps_dbg_log_lbl) {
+        lv_label_set_text(wd_gps_dbg_log_lbl, wd_gps_dbg_log);
+        if (wd_gps_dbg_log_box)
+            lv_obj_scroll_to_y(wd_gps_dbg_log_box, LV_COORD_MAX, LV_ANIM_OFF);
+    }
+    bsp_display_unlock();
+}
+
+static bool wd_gps_debug_coord(const char *value, char hemisphere, double *out)
+{
+    if (!value || !value[0] || !out) return false;
+    double nmea_value = strtod(value, NULL);
+    if (nmea_value <= 0.0) return false;
+    int degrees = (int)(nmea_value / 100.0);
+    double decimal = degrees + (nmea_value - degrees * 100.0) / 60.0;
+    if (hemisphere == 'S' || hemisphere == 'W') decimal = -decimal;
+    *out = decimal;
+    return true;
+}
+
+static void wd_gps_debug_parse_diagnostics(const char *line)
+{
+    if (!line) return;
+
+    bool gps_seen = strchr(line, '$') != NULL || strstr(line, "GPS raw reader started") != NULL;
+    bool gps_missing = strstr(line, "GPS not detected") != NULL ||
+                       strstr(line, "GPS module not found") != NULL;
+    bool antenna_ok = strstr(line, "ANTENNA OK") != NULL;
+    bool antenna_missing = strstr(line, "ANTENNA") != NULL &&
+                           (strstr(line, "NOT") != NULL || strstr(line, "FAIL") != NULL ||
+                            strstr(line, "OPEN") != NULL || strstr(line, "SHORT") != NULL);
+    if (!gps_seen && !gps_missing && !antenna_ok && !antenna_missing) return;
+
+    bsp_display_lock(0);
+    if (wd_gps_dbg_overlay) {
+        if (wd_gps_dbg_presence_lbl) {
+            if (gps_seen) {
+                lv_label_set_text(wd_gps_dbg_presence_lbl, "GPS: DETECTED");
+                lv_obj_set_style_text_color(wd_gps_dbg_presence_lbl, UI_ACCENT_GREEN, 0);
+            } else if (gps_missing) {
+                lv_label_set_text(wd_gps_dbg_presence_lbl, "GPS: NOT DETECTED");
+                lv_obj_set_style_text_color(wd_gps_dbg_presence_lbl, UI_ACCENT_RED, 0);
+            }
+        }
+        if (wd_gps_dbg_antenna_lbl) {
+            if (antenna_ok) {
+                lv_label_set_text(wd_gps_dbg_antenna_lbl, "Ant: OK");
+                lv_obj_set_style_text_color(wd_gps_dbg_antenna_lbl, UI_ACCENT_GREEN, 0);
+            } else if (antenna_missing) {
+                lv_label_set_text(wd_gps_dbg_antenna_lbl, "Ant: NONE");
+                lv_obj_set_style_text_color(wd_gps_dbg_antenna_lbl, UI_ACCENT_RED, 0);
+            }
+        }
+    }
+    bsp_display_unlock();
+}
+
+static void wd_gps_debug_parse_nmea(const char *line)
+{
+    const char *nmea = line ? strchr(line, '$') : NULL;
+    if (!nmea) return;
+
+    char copy[192];
+    snprintf(copy, sizeof(copy), "%s", nmea);
+    char *checksum = strchr(copy, '*');
+    if (checksum) *checksum = '\0';
+
+    char *fields[16] = {0};
+    int count = 0;
+    char *field = copy;
+    while (field && count < (int)(sizeof(fields) / sizeof(fields[0]))) {
+        fields[count++] = field;
+        char *comma = strchr(field, ',');
+        if (!comma) break;
+        *comma = '\0';
+        field = comma + 1;
+    }
+    if (count < 9 || !fields[0] || !strstr(fields[0], "GGA")) return;
+
+    int quality = atoi(fields[6]);
+    int satellites = atoi(fields[7]);
+    const char *hdop = fields[8][0] ? fields[8] : "-";
+    double latitude = 0.0, longitude = 0.0;
+    bool have_coords = quality > 0 && count > 5 &&
+                       wd_gps_debug_coord(fields[2], fields[3][0], &latitude) &&
+                       wd_gps_debug_coord(fields[4], fields[5][0], &longitude);
+
+    bsp_display_lock(0);
+    if (wd_gps_dbg_overlay) {
+        if (wd_gps_dbg_fix_lbl) {
+            lv_label_set_text(wd_gps_dbg_fix_lbl, quality > 0 ? "Fix: YES" : "Fix: NO");
+            lv_obj_set_style_text_color(wd_gps_dbg_fix_lbl,
+                                        quality > 0 ? UI_ACCENT_GREEN : UI_ACCENT_RED, 0);
+        }
+        if (wd_gps_dbg_sat_lbl)
+            lv_label_set_text_fmt(wd_gps_dbg_sat_lbl, "Sat: %d", satellites);
+        if (wd_gps_dbg_hdop_lbl)
+            lv_label_set_text_fmt(wd_gps_dbg_hdop_lbl, "HDOP: %s", hdop);
+        if (wd_gps_dbg_coord_lbl) {
+            if (have_coords) {
+                lv_label_set_text_fmt(wd_gps_dbg_coord_lbl, "%.6f, %.6f", latitude, longitude);
+                lv_obj_set_style_text_color(wd_gps_dbg_coord_lbl, UI_ACCENT_GREEN, 0);
+            } else {
+                lv_label_set_text(wd_gps_dbg_coord_lbl, "Coords: waiting for fix");
+                lv_obj_set_style_text_color(wd_gps_dbg_coord_lbl, ui_muted_color(), 0);
+            }
+        }
+    }
+    bsp_display_unlock();
+}
+
+/* UART line callback (runs on uart_rx task) while GPS debug is active. */
+static void wd_gps_debug_line_cb(const char *line)
+{
+    if (!wd_gps_dbg_running || !line) return;
+
+    wd_gps_debug_append_line(line);
+    wd_gps_debug_parse_diagnostics(line);
+    wd_gps_debug_parse_nmea(line);
+
+    if (wd_gps_dbg_stop_requested && strstr(line, "All operations stopped")) {
+        wd_gps_dbg_running = false;
+        wd_gps_dbg_stop_requested = false;
+        uart_set_line_callback(NULL);
+        bsp_display_lock(0);
+        if (wd_gps_dbg_overlay) wd_gps_debug_set_running_controls(false);
+        bsp_display_unlock();
+    }
+}
+
+static void wd_gps_debug_start_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wd_gps_dbg_overlay || wd_gps_dbg_running || !wd_gps_dbg_log) return;
+
+    wd_gps_dbg_log[0] = '\0';
+    if (wd_gps_dbg_log_lbl) lv_label_set_text(wd_gps_dbg_log_lbl, "");
+    if (wd_gps_dbg_fix_lbl) {
+        lv_label_set_text(wd_gps_dbg_fix_lbl, "Fix: waiting");
+        lv_obj_set_style_text_color(wd_gps_dbg_fix_lbl, UI_ACCENT_ORANGE, 0);
+    }
+    if (wd_gps_dbg_sat_lbl)  lv_label_set_text(wd_gps_dbg_sat_lbl, "Sat: -");
+    if (wd_gps_dbg_hdop_lbl) lv_label_set_text(wd_gps_dbg_hdop_lbl, "HDOP: -");
+    if (wd_gps_dbg_presence_lbl) {
+        lv_label_set_text(wd_gps_dbg_presence_lbl, "GPS: checking");
+        lv_obj_set_style_text_color(wd_gps_dbg_presence_lbl, UI_ACCENT_ORANGE, 0);
+    }
+    if (wd_gps_dbg_antenna_lbl) {
+        lv_label_set_text(wd_gps_dbg_antenna_lbl, "Ant: checking");
+        lv_obj_set_style_text_color(wd_gps_dbg_antenna_lbl, UI_ACCENT_ORANGE, 0);
+    }
+    if (wd_gps_dbg_coord_lbl) {
+        lv_label_set_text(wd_gps_dbg_coord_lbl, "Coords: waiting for fix");
+        lv_obj_set_style_text_color(wd_gps_dbg_coord_lbl, ui_muted_color(), 0);
+    }
+
+    wd_gps_dbg_stop_requested = false;
+    wd_gps_dbg_running = true;
+    wd_gps_debug_set_running_controls(true);
+
+    uart_handler_flush_rx();
+    uart_set_line_callback(wd_gps_debug_line_cb);
+    wd_gps_debug_append_line("> start_gps_raw");
+    uart_send_command("start_gps_raw");
+}
+
+static void wd_gps_debug_stop_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wd_gps_dbg_running || wd_gps_dbg_stop_requested) return;
+
+    wd_gps_dbg_stop_requested = true;
+    if (wd_gps_dbg_stop_btn) lv_obj_add_state(wd_gps_dbg_stop_btn, LV_STATE_DISABLED);
+    wd_gps_debug_append_line("> stop");
+    uart_send_command("stop");
+}
+
+static void wd_gps_debug_close_cb(lv_event_t *e)
+{
+    (void)e;
+
+    if (wd_gps_dbg_running) {
+        wd_gps_dbg_stop_requested = true;
+        wd_gps_dbg_running = false;
+        uart_send_command("stop");
+    }
+    uart_set_line_callback(NULL);
+
+    bsp_display_lock(0);
+    if (wd_gps_dbg_overlay) lv_obj_del(wd_gps_dbg_overlay);
+    wd_gps_dbg_overlay = NULL;
+    wd_gps_dbg_fix_lbl = NULL;
+    wd_gps_dbg_sat_lbl = NULL;
+    wd_gps_dbg_hdop_lbl = NULL;
+    wd_gps_dbg_presence_lbl = NULL;
+    wd_gps_dbg_antenna_lbl = NULL;
+    wd_gps_dbg_coord_lbl = NULL;
+    wd_gps_dbg_log_box = NULL;
+    wd_gps_dbg_log_lbl = NULL;
+    wd_gps_dbg_start_btn = NULL;
+    wd_gps_dbg_stop_btn = NULL;
+    wd_gps_dbg_close_btn = NULL;
+    bsp_display_unlock();
+}
+
+/* Small transparent flex-row helper for the stat / diagnostic / action rows. */
+static lv_obj_t *wd_gps_debug_row(lv_obj_t *parent, lv_coord_t h)
+{
+    lv_obj_t *row = lv_obj_create(parent);
+    lv_obj_set_size(row, LV_PCT(100), h ? h : LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+    return row;
+}
+
+static void wd_gps_debug_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!wd_setup_overlay || wd_gps_dbg_overlay) return;
+
+    /* Keep the sizeable raw-UART history out of internal RAM. */
+    if (!wd_gps_dbg_log) {
+        wd_gps_dbg_log = heap_caps_calloc(1, WD_GPS_DEBUG_LOG_SIZE,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!wd_gps_dbg_log) {
+            ESP_LOGE(TAG, "GPS Debug: failed to allocate %d-byte PSRAM log",
+                     WD_GPS_DEBUG_LOG_SIZE);
+            return;
+        }
+    }
+
+    wd_gps_dbg_overlay = lv_obj_create(wd_setup_overlay);
+    lv_obj_remove_style_all(wd_gps_dbg_overlay);
+    lv_obj_set_size(wd_gps_dbg_overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_pos(wd_gps_dbg_overlay, 0, 0);
+    lv_obj_set_style_bg_color(wd_gps_dbg_overlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(wd_gps_dbg_overlay, LV_OPA_70, 0);
+    lv_obj_clear_flag(wd_gps_dbg_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(wd_gps_dbg_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_move_foreground(wd_gps_dbg_overlay);
+
+    lv_obj_t *popup = lv_obj_create(wd_gps_dbg_overlay);
+    lv_obj_set_size(popup, 314, 234);
+    lv_obj_center(popup);
+    lv_obj_set_style_bg_color(popup, ui_card_color(), 0);
+    lv_obj_set_style_bg_opa(popup, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(popup, UI_ACCENT_TEAL, 0);
+    lv_obj_set_style_border_width(popup, 2, 0);
+    lv_obj_set_style_radius(popup, 12, 0);
+    lv_obj_set_style_pad_all(popup, 6, 0);
+    lv_obj_set_flex_flow(popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(popup, 3, 0);
+    lv_obj_clear_flag(popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(popup);
+    lv_label_set_text(title, LV_SYMBOL_GPS " GPS Debug");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(title, UI_ACCENT_TEAL, 0);
+
+    /* Fix / satellites / HDOP */
+    lv_obj_t *stats = wd_gps_debug_row(popup, 0);
+    wd_gps_dbg_fix_lbl  = lv_label_create(stats);
+    wd_gps_dbg_sat_lbl  = lv_label_create(stats);
+    wd_gps_dbg_hdop_lbl = lv_label_create(stats);
+    lv_label_set_text(wd_gps_dbg_fix_lbl, "Fix: waiting");
+    lv_label_set_text(wd_gps_dbg_sat_lbl, "Sat: -");
+    lv_label_set_text(wd_gps_dbg_hdop_lbl, "HDOP: -");
+    lv_obj_set_style_text_font(wd_gps_dbg_fix_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(wd_gps_dbg_sat_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(wd_gps_dbg_hdop_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(wd_gps_dbg_fix_lbl, UI_ACCENT_ORANGE, 0);
+    lv_obj_set_style_text_color(wd_gps_dbg_sat_lbl, UI_ACCENT_CYAN, 0);
+    lv_obj_set_style_text_color(wd_gps_dbg_hdop_lbl, UI_ACCENT_CYAN, 0);
+
+    /* GPS presence / antenna diagnostics */
+    lv_obj_t *diag = wd_gps_debug_row(popup, 0);
+    wd_gps_dbg_presence_lbl = lv_label_create(diag);
+    wd_gps_dbg_antenna_lbl  = lv_label_create(diag);
+    lv_label_set_text(wd_gps_dbg_presence_lbl, "GPS: checking");
+    lv_label_set_text(wd_gps_dbg_antenna_lbl, "Ant: checking");
+    lv_obj_set_style_text_font(wd_gps_dbg_presence_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(wd_gps_dbg_antenna_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(wd_gps_dbg_presence_lbl, UI_ACCENT_ORANGE, 0);
+    lv_obj_set_style_text_color(wd_gps_dbg_antenna_lbl, UI_ACCENT_ORANGE, 0);
+
+    wd_gps_dbg_coord_lbl = lv_label_create(popup);
+    lv_label_set_text(wd_gps_dbg_coord_lbl, "Coords: waiting for fix");
+    lv_obj_set_style_text_font(wd_gps_dbg_coord_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(wd_gps_dbg_coord_lbl, ui_muted_color(), 0);
+
+    /* Raw UART output log box (fills the remaining vertical space) */
+    wd_gps_dbg_log_box = lv_obj_create(popup);
+    lv_obj_set_width(wd_gps_dbg_log_box, LV_PCT(100));
+    lv_obj_set_flex_grow(wd_gps_dbg_log_box, 1);
+    lv_obj_set_style_bg_color(wd_gps_dbg_log_box, lv_color_hex(0x0B1018), 0);
+    lv_obj_set_style_border_color(wd_gps_dbg_log_box, lv_color_hex(0x37474F), 0);
+    lv_obj_set_style_border_width(wd_gps_dbg_log_box, 1, 0);
+    lv_obj_set_style_radius(wd_gps_dbg_log_box, 6, 0);
+    lv_obj_set_style_pad_all(wd_gps_dbg_log_box, 6, 0);
+    lv_obj_set_flex_flow(wd_gps_dbg_log_box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(wd_gps_dbg_log_box, 0, 0);
+    lv_obj_set_scroll_dir(wd_gps_dbg_log_box, LV_DIR_VER);
+    wd_gps_dbg_log_lbl = lv_label_create(wd_gps_dbg_log_box);
+    lv_label_set_text(wd_gps_dbg_log_lbl, "Tap Start to read NMEA sentences.");
+    lv_label_set_long_mode(wd_gps_dbg_log_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(wd_gps_dbg_log_lbl, LV_PCT(100));
+    lv_obj_set_style_text_font(wd_gps_dbg_log_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(wd_gps_dbg_log_lbl, lv_color_hex(0xCFD8DC), 0);
+
+    /* Start / Stop / Close */
+    lv_obj_t *actions = wd_gps_debug_row(popup, 32);
+
+    wd_gps_dbg_start_btn = lv_btn_create(actions);
+    lv_obj_set_size(wd_gps_dbg_start_btn, 96, 30);
+    lv_obj_set_style_bg_color(wd_gps_dbg_start_btn, UI_ACCENT_GREEN, 0);
+    lv_obj_set_style_radius(wd_gps_dbg_start_btn, 8, 0);
+    lv_obj_add_event_cb(wd_gps_dbg_start_btn, wd_gps_debug_start_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *start_lbl = lv_label_create(wd_gps_dbg_start_btn);
+    lv_label_set_text(start_lbl, LV_SYMBOL_PLAY " Start");
+    lv_obj_set_style_text_color(start_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(start_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(start_lbl);
+
+    wd_gps_dbg_stop_btn = lv_btn_create(actions);
+    lv_obj_set_size(wd_gps_dbg_stop_btn, 96, 30);
+    lv_obj_set_style_bg_color(wd_gps_dbg_stop_btn, UI_ACCENT_RED, 0);
+    lv_obj_set_style_bg_color(wd_gps_dbg_stop_btn, ui_card_color(), LV_STATE_DISABLED);
+    lv_obj_set_style_radius(wd_gps_dbg_stop_btn, 8, 0);
+    lv_obj_add_event_cb(wd_gps_dbg_stop_btn, wd_gps_debug_stop_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_state(wd_gps_dbg_stop_btn, LV_STATE_DISABLED);
+    lv_obj_t *stop_lbl = lv_label_create(wd_gps_dbg_stop_btn);
+    lv_label_set_text(stop_lbl, LV_SYMBOL_STOP " Stop");
+    lv_obj_set_style_text_color(stop_lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(stop_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(stop_lbl);
+
+    wd_gps_dbg_close_btn = lv_btn_create(actions);
+    lv_obj_set_size(wd_gps_dbg_close_btn, 96, 30);
+    style_neutral_button(wd_gps_dbg_close_btn);
+    lv_obj_add_event_cb(wd_gps_dbg_close_btn, wd_gps_debug_close_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *close_lbl = lv_label_create(wd_gps_dbg_close_btn);
+    lv_label_set_text(close_lbl, LV_SYMBOL_CLOSE " Close");
+    lv_obj_set_style_text_color(close_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(close_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(close_lbl);
 }
 
 /* ================================================================== */
