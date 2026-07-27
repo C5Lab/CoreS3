@@ -92,16 +92,35 @@ void show_home_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
 
-    /* compact title */
-    lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "Lab5");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(title, ui_text_color(), 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 3);
+    /* Fixed top bar, identical to the Settings screen: it carries the title
+     * and, when the feature is enabled, the status-bar "Lock" button on the
+     * right (added by ui_create_top_bar itself). No back button on the root. */
+    lv_obj_t *top_bar = ui_create_top_bar(scr, "Lab5", NULL, NULL);
 
-    /* scrollable tile grid */
+    /* Center the title the way the Settings bar does. ui_create_top_bar only
+     * centers it when a Back button is present, so do it here for the root
+     * (the title is the bar's first child). */
+    lv_obj_t *title_lbl = lv_obj_get_child(top_bar, 0);
+    if (title_lbl) {
+        lv_obj_set_style_text_align(title_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    }
+
+    /* Scrollable tile grid below the bar. A fixed height scrolls cleanly;
+     * an LV_SIZE_CONTENT box under a fixed bar miscomputes its scroll range. */
     lv_obj_t *grid = lv_obj_create(scr);
-    lv_obj_set_size(grid, LV_PCT(100), LV_SIZE_CONTENT);
+    {
+        lv_display_t *disp = lv_display_get_default();
+        int32_t vres = disp ? (int32_t)lv_display_get_vertical_resolution(disp) : 240;
+        int32_t grid_h = vres - 36 - 4;   /* 36 = top bar height */
+        if (grid_h < 80) {
+            grid_h = 80;
+        }
+        lv_obj_set_size(grid, LV_PCT(100), grid_h);
+    }
+    lv_obj_align_to(grid, top_bar, LV_ALIGN_OUT_BOTTOM_MID, 0, 2);
+    lv_obj_add_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(grid, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(grid, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_EVENLY,
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -111,7 +130,6 @@ void show_home_screen(void)
     lv_obj_set_style_pad_bottom(grid, 4, 0);
     lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(grid, 0, 0);
-    lv_obj_set_y(grid, 20);
 
     ui_create_tile(grid, LV_SYMBOL_WIFI,      "WiFi Scan\n& Attack",        UI_ACCENT_BLUE,           on_wifi_scan,       NULL);
     ui_create_tile(grid, LV_SYMBOL_WARNING,   "Global WiFi\nAttacks",      UI_ACCENT_RED,            on_global_wifi,     NULL);

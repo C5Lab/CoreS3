@@ -66,6 +66,14 @@ extern uint16_t screen_off_timeout_s;
 /** When true, CoreS3 reads the stacked M5 GPS v2.1 and pushes fixes to firmware. */
 extern bool external_gps_enabled;
 
+/** Screen-lock feature master switch (NVS `scr_lock`, default on). When off the
+ *  status-bar lock button is hidden and auto-lock never triggers. */
+extern bool screen_lock_enabled;
+
+/** When true, the screen locks automatically as it dims/blanks on idle
+ *  (NVS `scr_lock_dim`, default off). Only effective while `screen_lock_enabled`. */
+extern bool auto_lock_on_dim;
+
 /* ========== Color accessor functions ========== */
 static inline lv_color_t ui_bg_color(void) {
     return dark_mode_enabled ? COLOR_DARK_BG : COLOR_LIGHT_BG;
@@ -114,6 +122,8 @@ void save_uart_port_to_nvs(uart_port_mode_t mode);
 void save_external_gps_to_nvs(bool enabled);
 void save_screen_timeout_to_nvs(uint16_t seconds);
 void save_red_team_to_nvs(bool enabled);
+void save_screen_lock_to_nvs(bool enabled);
+void save_auto_lock_dim_to_nvs(bool enabled);
 void load_settings_from_nvs(void);
 
 /** Returns true when Red Team attacks are enabled (NVS, default off). */
@@ -135,6 +145,18 @@ void ui_screen_idle_inhibit(bool inhibit);
  * and re-enables the idle timeout.
  */
 void ui_screen_low_power(bool enable);
+
+/* ========== Screen lock ========== */
+
+/**
+ * Lock the screen: install a full-screen "slide to unlock" overlay on the
+ * LVGL top layer that captures every touch so nothing underneath can be
+ * activated. No-op if a lock overlay is already active (never stacks two).
+ */
+void ui_screen_lock_now(void);
+
+/** True while the slide-to-unlock overlay is present. */
+bool ui_screen_lock_active(void);
 
 /* ========== Settings screen ========== */
 void show_settings_screen(void);

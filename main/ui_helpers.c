@@ -20,6 +20,8 @@
 #define NVS_KEY_SCREEN_OFF  "screen_off_s"
 #define NVS_KEY_RED_TEAM    "red_team"
 #define NVS_KEY_EXT_GPS     "ext_gps"
+#define NVS_KEY_SCR_LOCK    "scr_lock"
+#define NVS_KEY_SCR_LOCK_DIM "scr_lock_dim"
 
 #define SCREEN_IDLE_POLL_MS           500
 
@@ -32,7 +34,12 @@ bool dark_mode_enabled = true;
 boot_sound_mode_t boot_sound_mode = BOOT_SOUND_NOKIA;
 uint16_t screen_off_timeout_s = 0;
 bool external_gps_enabled = false;
+bool screen_lock_enabled = true;
+bool auto_lock_on_dim = false;
 static bool red_team_enabled = false;
+
+/** Slide-to-unlock overlay on the top layer; NULL when the screen is unlocked. */
+static lv_obj_t *s_lock_overlay;
 
 static const uint16_t k_screen_timeout_sec[] = { 0, 30, 60, 120, 300, 600 };
 #define K_SCREEN_TIMEOUT_OPTS  (sizeof(k_screen_timeout_sec) / sizeof(k_screen_timeout_sec[0]))
@@ -154,8 +161,117 @@ static void screen_idle_timer_cb(lv_timer_t *timer)
         s_saved_brightness = UI_DEFAULT_BRIGHTNESS;
         bsp_display_brightness_set(0);
         s_bl_asleep = true;
+        /* Optional: arm the lock before the wake blocker so that, once the
+         * user taps to wake, the slide-to-unlock overlay is already waiting
+         * underneath. */
+        if (screen_lock_enabled && auto_lock_on_dim) {
+            ui_screen_lock_now();
+        }
         screen_wake_blocker_install();
     }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Screen lock (slide to unlock)                                      */
+/* ------------------------------------------------------------------ */
+
+/** Fraction of the slider travel (0..100) the user must reach to unlock. */
+#define LOCK_UNLOCK_THRESHOLD  96
+
+static void lock_overlay_on_delete(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+        s_lock_overlay = NULL;
+    }
+}
+
+static void lock_slider_released(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    if (lv_slider_get_value(slider) >= LOCK_UNLOCK_THRESHOLD) {
+        /* Fully slid: tear down the whole overlay (the DELETE cb clears the
+         * pointer). Deleting the slider's ancestor from its own event is safe
+         * here because LVGL finishes dispatch before processing the delete. */
+        if (s_lock_overlay) {
+            lv_obj_del(s_lock_overlay);
+        }
+    } else {
+        /* Not far enough: snap the knob back to the start. */
+        lv_slider_set_value(slider, 0, LV_ANIM_ON);
+    }
+}
+
+void ui_screen_lock_now(void)
+{
+    /* Never stack a second overlay on top of an active lock. */
+    if (s_lock_overlay) {
+        return;
+    }
+
+    lv_display_t *disp = lv_display_get_default();
+    if (!disp) {
+        return;
+    }
+    lv_obj_t *layer = lv_layer_top();
+    if (!layer) {
+        return;
+    }
+
+    int32_t hres = (int32_t)lv_display_get_horizontal_resolution(disp);
+    int32_t vres = (int32_t)lv_display_get_vertical_resolution(disp);
+
+    /* Full-screen opaque, clickable backdrop: swallows every touch that is not
+     * handled by the slider so nothing under the overlay can be activated. */
+    s_lock_overlay = lv_obj_create(layer);
+    lv_obj_remove_style_all(s_lock_overlay);
+    lv_obj_set_size(s_lock_overlay, hres, vres);
+    lv_obj_align(s_lock_overlay, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(s_lock_overlay, ui_bg_color(), 0);
+    lv_obj_set_style_bg_opa(s_lock_overlay, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_lock_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_lock_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_lock_overlay, lock_overlay_on_delete, LV_EVENT_DELETE, NULL);
+
+    lv_obj_t *icon = lv_label_create(s_lock_overlay);
+    lv_label_set_text(icon, LV_SYMBOL_EYE_CLOSE);
+    lv_obj_set_style_text_font(icon, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(icon, ui_accent_color(), 0);
+    lv_obj_align(icon, LV_ALIGN_CENTER, 0, -46);
+
+    lv_obj_t *title = lv_label_create(s_lock_overlay);
+    lv_label_set_text(title, "Screen locked");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -12);
+
+    lv_obj_t *hint = lv_label_create(s_lock_overlay);
+    lv_label_set_text(hint, "Slide to unlock " LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(hint, ui_muted_color(), 0);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 20);
+
+    /* Slide control: a wide slider styled as an iOS-style unlock track. */
+    lv_obj_t *slider = lv_slider_create(s_lock_overlay);
+    lv_slider_set_range(slider, 0, 100);
+    lv_slider_set_value(slider, 0, LV_ANIM_OFF);
+    lv_obj_set_size(slider, hres - 60, 52);
+    lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -26);
+    lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(slider, ui_card_color(), LV_PART_MAIN);
+    lv_obj_set_style_border_width(slider, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(slider, ui_border_color(), LV_PART_MAIN);
+    lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, ui_accent_color(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(slider, LV_OPA_40, LV_PART_INDICATOR);
+    lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+    lv_obj_set_style_bg_color(slider, ui_accent_color(), LV_PART_KNOB);
+    lv_obj_set_style_pad_all(slider, 2, LV_PART_KNOB);
+    lv_obj_add_event_cb(slider, lock_slider_released, LV_EVENT_RELEASED, NULL);
+}
+
+bool ui_screen_lock_active(void)
+{
+    return s_lock_overlay != NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -213,6 +329,12 @@ lv_obj_t *ui_screen_clear(void)
     return scr;
 }
 
+static void on_top_bar_lock(lv_event_t *e)
+{
+    (void)e;
+    ui_screen_lock_now();
+}
+
 lv_obj_t *ui_create_top_bar(lv_obj_t *parent, const char *title,
                             lv_event_cb_t on_back, void *user_data)
 {
@@ -254,6 +376,26 @@ lv_obj_t *ui_create_top_bar(lv_obj_t *parent, const char *title,
     lv_obj_set_flex_grow(lbl, 1);
     if (on_back)
         lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+
+    /* Status-bar lock control. The grown title label above pushes it to the
+     * right edge. Only shown while the feature is enabled (no glyph for a
+     * padlock in the bundled fonts, so a short "Lock" label is used). */
+    if (screen_lock_enabled) {
+        lv_obj_t *lock_btn = lv_btn_create(bar);
+        lv_obj_set_size(lock_btn, 46, 28);
+        lv_obj_set_style_bg_color(lock_btn, ui_card_color(), 0);
+        lv_obj_set_style_bg_color(lock_btn, ui_card_pressed_color(), LV_STATE_PRESSED);
+        lv_obj_set_style_radius(lock_btn, 6, 0);
+        lv_obj_set_style_pad_all(lock_btn, 0, 0);
+        lv_obj_set_ext_click_area(lock_btn, 20);
+        lv_obj_add_event_cb(lock_btn, on_top_bar_lock, LV_EVENT_CLICKED, NULL);
+
+        lv_obj_t *lock_lbl = lv_label_create(lock_btn);
+        lv_label_set_text(lock_lbl, "Lock");
+        lv_obj_set_style_text_color(lock_lbl, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(lock_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_center(lock_lbl);
+    }
 
     return bar;
 }
@@ -414,6 +556,32 @@ void save_external_gps_to_nvs(bool enabled)
     }
 }
 
+void save_screen_lock_to_nvs(bool enabled)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_SCR_LOCK, enabled ? 1 : 0);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    } else {
+        ESP_LOGW(TAG, "NVS open for write failed: %s", esp_err_to_name(err));
+    }
+}
+
+void save_auto_lock_dim_to_nvs(bool enabled)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_SCR_LOCK_DIM, enabled ? 1 : 0);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    } else {
+        ESP_LOGW(TAG, "NVS open for write failed: %s", esp_err_to_name(err));
+    }
+}
+
 bool ui_red_team_enabled(void)
 {
     return red_team_enabled;
@@ -470,6 +638,18 @@ void load_settings_from_nvs(void)
         external_gps_enabled = (egps != 0);
     }
 
+    uint8_t scr_lock = 1; /* default enabled */
+    err = nvs_get_u8(nvs, NVS_KEY_SCR_LOCK, &scr_lock);
+    if (err == ESP_OK) {
+        screen_lock_enabled = (scr_lock != 0);
+    }
+
+    uint8_t scr_lock_dim = 0; /* default disabled */
+    err = nvs_get_u8(nvs, NVS_KEY_SCR_LOCK_DIM, &scr_lock_dim);
+    if (err == ESP_OK) {
+        auto_lock_on_dim = (scr_lock_dim != 0);
+    }
+
     nvs_close(nvs);
 }
 
@@ -503,6 +683,35 @@ static void on_red_team_toggle(lv_event_t *e)
     red_team_enabled = enabled;
     save_red_team_to_nvs(red_team_enabled);
     show_settings_screen();
+}
+
+static void on_screen_lock_toggle(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (screen_lock_enabled == enabled) return;
+
+    screen_lock_enabled = enabled;
+    save_screen_lock_to_nvs(screen_lock_enabled);
+    /* Rebuild so the "Lock now" / auto-lock rows and the status-bar lock
+     * button reflect the new state. */
+    show_settings_screen();
+}
+
+static void on_auto_lock_dim_toggle(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool enabled = lv_obj_has_state(sw, LV_STATE_CHECKED);
+    if (auto_lock_on_dim == enabled) return;
+
+    auto_lock_on_dim = enabled;
+    save_auto_lock_dim_to_nvs(auto_lock_on_dim);
+}
+
+static void on_lock_now_btn(lv_event_t *e)
+{
+    (void)e;
+    ui_screen_lock_now();
 }
 
 static void on_gps_warn_dismiss(lv_event_t *e)
@@ -765,6 +974,54 @@ void show_settings_screen(void)
     lv_obj_set_style_bg_color(rt_sw, ui_muted_color(), 0);
     lv_obj_set_style_bg_color(rt_sw, UI_ACCENT_RED, LV_STATE_CHECKED | LV_PART_INDICATOR);
     lv_obj_add_event_cb(rt_sw, on_red_team_toggle, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Screen lock row */
+    lv_obj_t *lock_row = create_settings_row(cont);
+
+    lv_obj_t *lock_lbl = lv_label_create(lock_row);
+    lv_label_set_text(lock_lbl, "Screen lock");
+    lv_obj_set_style_text_color(lock_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(lock_lbl, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *lock_sw = lv_switch_create(lock_row);
+    if (screen_lock_enabled) lv_obj_add_state(lock_sw, LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(lock_sw, ui_muted_color(), 0);
+    lv_obj_set_style_bg_color(lock_sw, UI_ACCENT_BLUE, LV_STATE_CHECKED | LV_PART_INDICATOR);
+    lv_obj_add_event_cb(lock_sw, on_screen_lock_toggle, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* Lock-now + auto-lock rows only make sense while the feature is enabled. */
+    if (screen_lock_enabled) {
+        lv_obj_t *lock_now_row = create_settings_row(cont);
+
+        lv_obj_t *ln_lbl = lv_label_create(lock_now_row);
+        lv_label_set_text(ln_lbl, "Lock now");
+        lv_obj_set_style_text_color(ln_lbl, ui_text_color(), 0);
+        lv_obj_set_style_text_font(ln_lbl, &lv_font_montserrat_14, 0);
+
+        lv_obj_t *ln_btn = lv_btn_create(lock_now_row);
+        lv_obj_set_size(ln_btn, 100, 32);
+        lv_obj_set_style_bg_color(ln_btn, UI_ACCENT_BLUE, 0);
+        lv_obj_set_style_radius(ln_btn, 8, 0);
+        lv_obj_add_event_cb(ln_btn, on_lock_now_btn, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *ln_btn_lbl = lv_label_create(ln_btn);
+        lv_label_set_text(ln_btn_lbl, LV_SYMBOL_EYE_CLOSE " Lock");
+        lv_obj_set_style_text_color(ln_btn_lbl, lv_color_white(), 0);
+        lv_obj_set_style_text_font(ln_btn_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_center(ln_btn_lbl);
+
+        lv_obj_t *dim_row = create_settings_row(cont);
+
+        lv_obj_t *dim_lbl = lv_label_create(dim_row);
+        lv_label_set_text(dim_lbl, "Auto-lock on dim");
+        lv_obj_set_style_text_color(dim_lbl, ui_text_color(), 0);
+        lv_obj_set_style_text_font(dim_lbl, &lv_font_montserrat_14, 0);
+
+        lv_obj_t *dim_sw = lv_switch_create(dim_row);
+        if (auto_lock_on_dim) lv_obj_add_state(dim_sw, LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(dim_sw, ui_muted_color(), 0);
+        lv_obj_set_style_bg_color(dim_sw, UI_ACCENT_BLUE, LV_STATE_CHECKED | LV_PART_INDICATOR);
+        lv_obj_add_event_cb(dim_sw, on_auto_lock_dim_toggle, LV_EVENT_VALUE_CHANGED, NULL);
+    }
 
     /* External GPS row */
     lv_obj_t *gps_row = create_settings_row(cont);

@@ -165,6 +165,16 @@ static lv_obj_t *wd_gps_dbg_close_btn = NULL;
 static volatile bool wd_gps_dbg_running        = false;
 static volatile bool wd_gps_dbg_stop_requested = false;
 static char *wd_gps_dbg_log = NULL;   /* PSRAM, allocated lazily on first open */
+/* Refresh throttle + last-shown diagnostic states. The NMEA stream is many
+ * lines/sec; repainting the (multi-KB, word-wrapped) log label on every line
+ * thrashes the PSRAM heap and the layout engine, which eventually starves RAM
+ * and hangs the core. We keep the ring buffer current on every line but only
+ * push it to the label a few times a second, and only touch the tiny status
+ * labels when their value actually changes. */
+#define WD_GPS_DEBUG_UI_MIN_MS 250
+static uint32_t wd_gps_dbg_last_ui = 0;
+static int wd_gps_dbg_presence_state = -1;  /* -1 unset, 0 checking, 1 detected, 2 missing */
+static int wd_gps_dbg_antenna_state  = -1;  /* -1 unset, 0 checking, 1 ok, 2 missing */
 
 static lv_timer_t *wd_gps_push_timer = NULL;
 
@@ -1411,10 +1421,12 @@ static void wd_gps_debug_set_running_controls(bool running)
     }
 }
 
-/* Append a line to the PSRAM ring log and refresh the on-screen box. Called
- * from both the LVGL thread (start echo) and the uart_rx task (NMEA stream);
- * bsp_display_lock guards the LVGL access in either case. */
-static void wd_gps_debug_append_line(const char *line)
+/* Append a line to the PSRAM ring log and (rate-limited) refresh the on-screen
+ * box. Called from both the LVGL thread (start/stop echo, force=true) and the
+ * uart_rx task (NMEA stream, force=false); bsp_display_lock guards the LVGL
+ * access in either case. The buffer is always updated; the expensive label
+ * repaint is throttled to WD_GPS_DEBUG_UI_MIN_MS. */
+static void wd_gps_debug_append_line(const char *line, bool force)
 {
     if (!wd_gps_dbg_log || !line || !line[0]) return;
 
@@ -1433,6 +1445,11 @@ static void wd_gps_debug_append_line(const char *line)
     used += line_len;
     wd_gps_dbg_log[used++] = '\n';
     wd_gps_dbg_log[used] = '\0';
+
+    if (!force && wd_gps_dbg_last_ui &&
+        lv_tick_elaps(wd_gps_dbg_last_ui) < WD_GPS_DEBUG_UI_MIN_MS)
+        return;                 /* keep the buffer fresh, skip the repaint */
+    wd_gps_dbg_last_ui = lv_tick_get();
 
     bsp_display_lock(0);
     if (wd_gps_dbg_overlay && wd_gps_dbg_log_lbl) {
@@ -1468,25 +1485,26 @@ static void wd_gps_debug_parse_diagnostics(const char *line)
                             strstr(line, "OPEN") != NULL || strstr(line, "SHORT") != NULL);
     if (!gps_seen && !gps_missing && !antenna_ok && !antenna_missing) return;
 
+    /* Only repaint on an actual state change — GPS presence is re-asserted by
+     * every '$' sentence, so an unguarded set_text here fires many times/sec. */
+    int presence = gps_seen ? 1 : gps_missing ? 2 : -1;
+    int antenna  = antenna_ok ? 1 : antenna_missing ? 2 : -1;
+
     bsp_display_lock(0);
     if (wd_gps_dbg_overlay) {
-        if (wd_gps_dbg_presence_lbl) {
-            if (gps_seen) {
-                lv_label_set_text(wd_gps_dbg_presence_lbl, "GPS: DETECTED");
-                lv_obj_set_style_text_color(wd_gps_dbg_presence_lbl, UI_ACCENT_GREEN, 0);
-            } else if (gps_missing) {
-                lv_label_set_text(wd_gps_dbg_presence_lbl, "GPS: NOT DETECTED");
-                lv_obj_set_style_text_color(wd_gps_dbg_presence_lbl, UI_ACCENT_RED, 0);
-            }
+        if (wd_gps_dbg_presence_lbl && presence != -1 && presence != wd_gps_dbg_presence_state) {
+            wd_gps_dbg_presence_state = presence;
+            lv_label_set_text(wd_gps_dbg_presence_lbl,
+                              presence == 1 ? "GPS: DETECTED" : "GPS: NOT DETECTED");
+            lv_obj_set_style_text_color(wd_gps_dbg_presence_lbl,
+                                        presence == 1 ? UI_ACCENT_GREEN : UI_ACCENT_RED, 0);
         }
-        if (wd_gps_dbg_antenna_lbl) {
-            if (antenna_ok) {
-                lv_label_set_text(wd_gps_dbg_antenna_lbl, "Ant: OK");
-                lv_obj_set_style_text_color(wd_gps_dbg_antenna_lbl, UI_ACCENT_GREEN, 0);
-            } else if (antenna_missing) {
-                lv_label_set_text(wd_gps_dbg_antenna_lbl, "Ant: NONE");
-                lv_obj_set_style_text_color(wd_gps_dbg_antenna_lbl, UI_ACCENT_RED, 0);
-            }
+        if (wd_gps_dbg_antenna_lbl && antenna != -1 && antenna != wd_gps_dbg_antenna_state) {
+            wd_gps_dbg_antenna_state = antenna;
+            lv_label_set_text(wd_gps_dbg_antenna_lbl,
+                              antenna == 1 ? "Ant: OK" : "Ant: NONE");
+            lv_obj_set_style_text_color(wd_gps_dbg_antenna_lbl,
+                                        antenna == 1 ? UI_ACCENT_GREEN : UI_ACCENT_RED, 0);
         }
     }
     bsp_display_unlock();
@@ -1551,7 +1569,7 @@ static void wd_gps_debug_line_cb(const char *line)
 {
     if (!wd_gps_dbg_running || !line) return;
 
-    wd_gps_debug_append_line(line);
+    wd_gps_debug_append_line(line, false);
     wd_gps_debug_parse_diagnostics(line);
     wd_gps_debug_parse_nmea(line);
 
@@ -1593,11 +1611,14 @@ static void wd_gps_debug_start_cb(lv_event_t *e)
 
     wd_gps_dbg_stop_requested = false;
     wd_gps_dbg_running = true;
+    wd_gps_dbg_last_ui = 0;
+    wd_gps_dbg_presence_state = -1;
+    wd_gps_dbg_antenna_state = -1;
     wd_gps_debug_set_running_controls(true);
 
     uart_handler_flush_rx();
     uart_set_line_callback(wd_gps_debug_line_cb);
-    wd_gps_debug_append_line("> start_gps_raw");
+    wd_gps_debug_append_line("> start_gps_raw", true);
     uart_send_command("start_gps_raw");
 }
 
@@ -1608,7 +1629,7 @@ static void wd_gps_debug_stop_cb(lv_event_t *e)
 
     wd_gps_dbg_stop_requested = true;
     if (wd_gps_dbg_stop_btn) lv_obj_add_state(wd_gps_dbg_stop_btn, LV_STATE_DISABLED);
-    wd_gps_debug_append_line("> stop");
+    wd_gps_debug_append_line("> stop", true);
     uart_send_command("stop");
 }
 
