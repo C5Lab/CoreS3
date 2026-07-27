@@ -53,17 +53,6 @@ static void on_settings_bar_deleted(lv_event_t *e)
     }
 }
 
-static void on_settings_dropdown_raise_bar(lv_event_t *e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_READY) {
-        return;
-    }
-    lv_obj_t *bar = lv_event_get_user_data(e);
-    if (bar) {
-        lv_obj_move_to_index(bar, -1);
-    }
-}
-
 static void screen_wake_blocker_remove(void)
 {
     if (s_wake_blocker) {
@@ -721,19 +710,24 @@ void show_settings_screen(void)
     s_settings_top_bar = top_bar;
     lv_obj_add_event_cb(top_bar, on_settings_bar_deleted, LV_EVENT_DELETE, NULL);
 
+    /* Fixed-height scrollable card (mirrors the Wardrive setup popup): a flex
+     * column with an explicit height scrolls cleanly. A LV_SIZE_CONTENT box
+     * with a max_height cap miscomputes its scroll range and springs back,
+     * leaving the bottom rows unreachable. */
     lv_obj_t *cont = lv_obj_create(scr);
-    lv_obj_set_size(cont, LV_PCT(90), LV_SIZE_CONTENT);
-    lv_obj_align_to(cont, top_bar, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
     {
         lv_display_t *disp = lv_display_get_default();
         int32_t vres = disp ? (int32_t)lv_display_get_vertical_resolution(disp) : 240;
-        int32_t max_h = vres - UI_TOP_BAR_H - 6 - 8;
-        if (max_h < 80) {
-            max_h = 80;
+        int32_t cont_h = vres - UI_TOP_BAR_H - 6 - 8;
+        if (cont_h < 80) {
+            cont_h = 80;
         }
-        lv_obj_set_style_max_height(cont, max_h, 0);
+        lv_obj_set_size(cont, LV_PCT(90), cont_h);
     }
+    lv_obj_align_to(cont, top_bar, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
     lv_obj_add_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(cont, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_style_bg_color(cont, ui_card_color(), 0);
     lv_obj_set_style_bg_opa(cont, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(cont, 12, 0);
@@ -812,7 +806,6 @@ void show_settings_screen(void)
     }
 
     lv_obj_add_event_cb(dd, on_boot_sound_changed, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(dd, on_settings_dropdown_raise_bar, LV_EVENT_READY, top_bar);
 
     /* UART port row */
     lv_obj_t *uart_row = create_settings_row(cont);
@@ -840,7 +833,6 @@ void show_settings_screen(void)
     }
 
     lv_obj_add_event_cb(udd, on_uart_port_changed, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(udd, on_settings_dropdown_raise_bar, LV_EVENT_READY, top_bar);
 
     /* Screen timeout row */
     lv_obj_t *to_row = create_settings_row(cont);
@@ -868,7 +860,6 @@ void show_settings_screen(void)
     }
 
     lv_obj_add_event_cb(todd, on_screen_timeout_changed, LV_EVENT_VALUE_CHANGED, NULL);
-    lv_obj_add_event_cb(todd, on_settings_dropdown_raise_bar, LV_EVENT_READY, top_bar);
 
     lv_obj_move_to_index(top_bar, -1);
 }
