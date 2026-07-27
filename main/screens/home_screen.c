@@ -7,6 +7,7 @@
 #include "bluetooth_screen.h"
 #include "deauth_detector_screen.h"
 #include "subghz_screen.h"
+#include "nfc_screen.h"
 #include "ir_remote_screen.h"
 #include "device_info.h"
 #include "ui_helpers.h"
@@ -63,6 +64,13 @@ static void on_subghz(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "Sub-GHz");
     show_subghz_screen();
+}
+
+static void on_nfc(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "NFC");
+    show_nfc_screen();
 }
 
 static void on_ir(lv_event_t *e)
@@ -139,6 +147,9 @@ void show_home_screen(void)
     ui_create_tile(grid, LV_SYMBOL_CHARGE,    "Deauth\nDetector",          UI_ACCENT_CYAN,           on_deauth_detector, NULL);
     if (device_info_has_subghz()) {
         ui_create_tile(grid, LV_SYMBOL_BARS,  "Sub-GHz",                   UI_ACCENT_PINK,           on_subghz,          NULL);
+        if (device_info_has_nfc()) {
+            ui_create_tile(grid, LV_SYMBOL_USB, "NFC",                     UI_ACCENT_CYAN,           on_nfc,             NULL);
+        }
     }
     ui_create_tile(grid, LV_SYMBOL_VIDEO,     "IR TV\nPower",              UI_ACCENT_TEAL,           on_ir,              NULL);
     ui_create_tile(grid, LV_SYMBOL_GPS,       "Wardrive",                  UI_ACCENT_TEAL,           on_wardrive,        NULL);
