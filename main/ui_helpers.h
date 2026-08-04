@@ -60,6 +60,13 @@ typedef enum {
 
 extern boot_sound_mode_t boot_sound_mode;
 
+typedef enum {
+    NFC_BUS_MODE_SPI = 0,
+    NFC_BUS_MODE_I2C = 1,
+} nfc_bus_mode_t;
+
+extern nfc_bus_mode_t nfc_bus_mode;
+
 /** Seconds of LVGL inactivity before backlight off; 0 = never. */
 extern uint16_t screen_off_timeout_s;
 
@@ -118,6 +125,7 @@ lv_obj_t *ui_create_tile(lv_obj_t *parent, const char *icon,
 /* ========== NVS persistence ========== */
 void save_dark_mode_to_nvs(bool enabled);
 void save_boot_sound_to_nvs(boot_sound_mode_t mode);
+void save_nfc_bus_to_nvs(nfc_bus_mode_t mode);
 void save_uart_port_to_nvs(uart_port_mode_t mode);
 void save_external_gps_to_nvs(bool enabled);
 void save_screen_timeout_to_nvs(uint16_t seconds);

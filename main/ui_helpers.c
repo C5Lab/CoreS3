@@ -9,6 +9,8 @@
 #include "bsp/m5stack_core_s3.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <ctype.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +18,7 @@
 #define NVS_NAMESPACE       "settings"
 #define NVS_KEY_DARK_MODE   "dark_mode"
 #define NVS_KEY_BOOT_SOUND  "boot_sound"
+#define NVS_KEY_NFC_BUS     "nfc_bus"
 #define NVS_KEY_UART_PORT   "uart_port"
 #define NVS_KEY_SCREEN_OFF  "screen_off_s"
 #define NVS_KEY_RED_TEAM    "red_team"
@@ -32,6 +35,7 @@ static const char *TAG = "ui_helpers";
 
 bool dark_mode_enabled = true;
 boot_sound_mode_t boot_sound_mode = BOOT_SOUND_NOKIA;
+nfc_bus_mode_t nfc_bus_mode = NFC_BUS_MODE_SPI;
 uint16_t screen_off_timeout_s = 0;
 bool external_gps_enabled = false;
 bool screen_lock_enabled = true;
@@ -52,6 +56,247 @@ static bool s_idle_inhibit;
 
 /** Settings top bar; used to keep Back above dropdown lists / popups. Cleared on LV_EVENT_DELETE. */
 static lv_obj_t *s_settings_top_bar;
+static lv_obj_t *s_nfc_mode_sw;
+static lv_obj_t *s_nfc_mode_spi_lbl;
+static lv_obj_t *s_nfc_mode_i2c_lbl;
+static bool s_settings_screen_active;
+static bool s_nfc_mode_busy;
+static bool s_nfc_mode_ignore_event;
+
+typedef enum {
+    NFC_UART_ACTION_NONE = 0,
+    NFC_UART_ACTION_LOAD,
+    NFC_UART_ACTION_SET,
+} nfc_uart_action_t;
+
+typedef struct {
+    nfc_uart_action_t action;
+    bool parsed;
+    nfc_bus_mode_t mode;
+} nfc_uart_result_t;
+
+static nfc_uart_action_t s_nfc_uart_action;
+static nfc_uart_result_t s_nfc_uart_result;
+
+static void settings_nfc_mode_sync_ui(void);
+static void settings_nfc_mode_set_busy(bool busy);
+static void settings_nfc_mode_begin_collect(nfc_uart_action_t action,
+                                            const char *cmd);
+static void settings_nfc_mode_request_load(void);
+static void settings_nfc_mode_request_set(nfc_bus_mode_t mode);
+static bool parse_nfc_bus_line(const char *line, nfc_bus_mode_t *mode_out);
+static void on_nfc_mode_collect_complete(const char **lines, int count);
+static void apply_nfc_mode_collect_result(void *user_data);
+static void on_nfc_mode_toggle(lv_event_t *e);
+static void on_settings_screen_deleted(lv_event_t *e);
+
+static void settings_nfc_mode_sync_ui(void)
+{
+    if (s_nfc_mode_sw && lv_obj_is_valid(s_nfc_mode_sw)) {
+        s_nfc_mode_ignore_event = true;
+        if (nfc_bus_mode == NFC_BUS_MODE_I2C) {
+            lv_obj_add_state(s_nfc_mode_sw, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(s_nfc_mode_sw, LV_STATE_CHECKED);
+        }
+        s_nfc_mode_ignore_event = false;
+    }
+
+    if (s_nfc_mode_spi_lbl && lv_obj_is_valid(s_nfc_mode_spi_lbl)) {
+        lv_obj_set_style_text_color(
+            s_nfc_mode_spi_lbl,
+            (nfc_bus_mode == NFC_BUS_MODE_SPI) ? UI_ACCENT_TEAL : ui_muted_color(),
+            0);
+    }
+
+    if (s_nfc_mode_i2c_lbl && lv_obj_is_valid(s_nfc_mode_i2c_lbl)) {
+        lv_obj_set_style_text_color(
+            s_nfc_mode_i2c_lbl,
+            (nfc_bus_mode == NFC_BUS_MODE_I2C) ? UI_ACCENT_TEAL : ui_muted_color(),
+            0);
+    }
+}
+
+static void settings_nfc_mode_set_busy(bool busy)
+{
+    s_nfc_mode_busy = busy;
+    if (!s_nfc_mode_sw || !lv_obj_is_valid(s_nfc_mode_sw)) {
+        return;
+    }
+
+    if (busy) {
+        lv_obj_add_state(s_nfc_mode_sw, LV_STATE_DISABLED);
+    } else {
+        lv_obj_clear_state(s_nfc_mode_sw, LV_STATE_DISABLED);
+    }
+}
+
+static void settings_nfc_mode_begin_collect(nfc_uart_action_t action,
+                                            const char *cmd)
+{
+    if (!cmd) {
+        return;
+    }
+
+    s_nfc_uart_action = action;
+    settings_nfc_mode_set_busy(true);
+    uart_start_collect("[NFC] END", on_nfc_mode_collect_complete);
+    uart_send_command(cmd);
+}
+
+static void settings_nfc_mode_request_load(void)
+{
+    if (!s_settings_screen_active) {
+        return;
+    }
+
+    if (s_nfc_uart_action != NFC_UART_ACTION_NONE) {
+        uart_stop_collect();
+        s_nfc_uart_action = NFC_UART_ACTION_NONE;
+    }
+
+    settings_nfc_mode_begin_collect(NFC_UART_ACTION_LOAD, "get_nfc_bus");
+}
+
+static void settings_nfc_mode_request_set(nfc_bus_mode_t mode)
+{
+    char cmd[32];
+
+    if (s_nfc_uart_action != NFC_UART_ACTION_NONE) {
+        uart_stop_collect();
+        s_nfc_uart_action = NFC_UART_ACTION_NONE;
+    }
+
+    snprintf(cmd, sizeof(cmd), "set_nfc_bus %s",
+             (mode == NFC_BUS_MODE_I2C) ? "i2c" : "spi");
+    settings_nfc_mode_begin_collect(NFC_UART_ACTION_SET, cmd);
+}
+
+static bool parse_nfc_bus_line(const char *line, nfc_bus_mode_t *mode_out)
+{
+    const char *prefix;
+    const char *value;
+
+    if (!line || !mode_out) {
+        return false;
+    }
+
+    prefix = strstr(line, "[NFC] bus:");
+    if (!prefix) {
+        return false;
+    }
+
+    value = prefix + strlen("[NFC] bus:");
+    while (*value == ' ') {
+        value++;
+    }
+
+    if (value[0] == '\0' || value[1] == '\0' || value[2] == '\0') {
+        return false;
+    }
+
+    if (tolower((unsigned char)value[0]) == 's' &&
+        tolower((unsigned char)value[1]) == 'p' &&
+        tolower((unsigned char)value[2]) == 'i') {
+        *mode_out = NFC_BUS_MODE_SPI;
+        return true;
+    }
+
+    if (tolower((unsigned char)value[0]) == 'i' &&
+        tolower((unsigned char)value[1]) == '2' &&
+        tolower((unsigned char)value[2]) == 'c') {
+        *mode_out = NFC_BUS_MODE_I2C;
+        return true;
+    }
+
+    return false;
+}
+
+static void on_nfc_mode_collect_complete(const char **lines, int count)
+{
+    nfc_bus_mode_t parsed_mode = nfc_bus_mode;
+    bool parsed = false;
+
+    for (int i = 0; i < count; i++) {
+        if (parse_nfc_bus_line(lines[i], &parsed_mode)) {
+            parsed = true;
+            break;
+        }
+    }
+
+    s_nfc_uart_result.action = s_nfc_uart_action;
+    s_nfc_uart_result.parsed = parsed;
+    s_nfc_uart_result.mode = parsed_mode;
+    s_nfc_uart_action = NFC_UART_ACTION_NONE;
+
+    if (!parsed) {
+        ESP_LOGW(TAG, "NFC bus response missing bus line");
+    }
+
+    if (!ui_lvgl_async_call(apply_nfc_mode_collect_result, NULL)) {
+        ESP_LOGW(TAG, "Failed to schedule NFC mode UI update");
+        s_nfc_mode_busy = false;
+    }
+}
+
+static void apply_nfc_mode_collect_result(void *user_data)
+{
+    (void)user_data;
+
+    if (s_nfc_uart_result.parsed && nfc_bus_mode != s_nfc_uart_result.mode) {
+        nfc_bus_mode = s_nfc_uart_result.mode;
+        save_nfc_bus_to_nvs(nfc_bus_mode);
+    }
+
+    if (s_settings_screen_active) {
+        settings_nfc_mode_sync_ui();
+        settings_nfc_mode_set_busy(false);
+    } else {
+        s_nfc_mode_busy = false;
+    }
+}
+
+static void on_nfc_mode_toggle(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    nfc_bus_mode_t selected = lv_obj_has_state(sw, LV_STATE_CHECKED)
+                                  ? NFC_BUS_MODE_I2C
+                                  : NFC_BUS_MODE_SPI;
+
+    if (s_nfc_mode_ignore_event) {
+        return;
+    }
+
+    if (s_nfc_mode_busy) {
+        settings_nfc_mode_sync_ui();
+        return;
+    }
+
+    if (selected == nfc_bus_mode) {
+        return;
+    }
+
+    nfc_bus_mode = selected;
+    save_nfc_bus_to_nvs(nfc_bus_mode);
+    settings_nfc_mode_sync_ui();
+    settings_nfc_mode_request_set(nfc_bus_mode);
+}
+
+static void on_settings_screen_deleted(lv_event_t *e)
+{
+    (void)e;
+    s_settings_screen_active = false;
+    s_nfc_mode_sw = NULL;
+    s_nfc_mode_spi_lbl = NULL;
+    s_nfc_mode_i2c_lbl = NULL;
+    s_nfc_mode_busy = false;
+    s_nfc_mode_ignore_event = false;
+
+    if (s_nfc_uart_action != NFC_UART_ACTION_NONE) {
+        uart_stop_collect();
+        s_nfc_uart_action = NFC_UART_ACTION_NONE;
+    }
+}
 
 static void on_settings_bar_deleted(lv_event_t *e)
 {
@@ -506,6 +751,17 @@ void save_boot_sound_to_nvs(boot_sound_mode_t mode)
     }
 }
 
+void save_nfc_bus_to_nvs(nfc_bus_mode_t mode)
+{
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs);
+    if (err == ESP_OK) {
+        nvs_set_u8(nvs, NVS_KEY_NFC_BUS, (uint8_t)mode);
+        nvs_commit(nvs);
+        nvs_close(nvs);
+    }
+}
+
 void save_uart_port_to_nvs(uart_port_mode_t mode)
 {
     nvs_handle_t nvs;
@@ -603,6 +859,12 @@ void load_settings_from_nvs(void)
     err = nvs_get_u8(nvs, NVS_KEY_BOOT_SOUND, &bsound);
     if (err == ESP_OK && bsound <= BOOT_SOUND_STARWARS) {
         boot_sound_mode = (boot_sound_mode_t)bsound;
+    }
+
+    uint8_t nbus = NFC_BUS_MODE_SPI;
+    err = nvs_get_u8(nvs, NVS_KEY_NFC_BUS, &nbus);
+    if (err == ESP_OK && nbus <= NFC_BUS_MODE_I2C) {
+        nfc_bus_mode = (nfc_bus_mode_t)nbus;
     }
 
     uint8_t uport = UART_PORT_MODE_MBUS;
@@ -913,7 +1175,20 @@ static lv_obj_t *create_settings_row(lv_obj_t *parent)
 
 void show_settings_screen(void)
 {
+    if (s_nfc_uart_action != NFC_UART_ACTION_NONE) {
+        uart_stop_collect();
+        s_nfc_uart_action = NFC_UART_ACTION_NONE;
+    }
+    s_settings_screen_active = false;
+    s_nfc_mode_sw = NULL;
+    s_nfc_mode_spi_lbl = NULL;
+    s_nfc_mode_i2c_lbl = NULL;
+    s_nfc_mode_busy = false;
+    s_nfc_mode_ignore_event = false;
+
     lv_obj_t *scr = ui_screen_clear();
+    lv_obj_add_event_cb(scr, on_settings_screen_deleted, LV_EVENT_DELETE, NULL);
+    s_settings_screen_active = true;
 
     lv_obj_t *top_bar = ui_create_top_bar(scr, "Settings", on_settings_back, NULL);
     s_settings_top_bar = top_bar;
@@ -1037,6 +1312,42 @@ void show_settings_screen(void)
     lv_obj_set_style_bg_color(gps_sw, UI_ACCENT_TEAL, LV_STATE_CHECKED | LV_PART_INDICATOR);
     lv_obj_add_event_cb(gps_sw, on_external_gps_toggle, LV_EVENT_VALUE_CHANGED, NULL);
 
+    /* NFC mode row */
+    lv_obj_t *nfc_row = create_settings_row(cont);
+
+    lv_obj_t *nfc_lbl = lv_label_create(nfc_row);
+    lv_label_set_text(nfc_lbl, "NFC Mode");
+    lv_obj_set_style_text_color(nfc_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(nfc_lbl, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *nfc_mode_box = lv_obj_create(nfc_row);
+    lv_obj_set_size(nfc_mode_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(nfc_mode_box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(nfc_mode_box, 0, 0);
+    lv_obj_set_style_pad_all(nfc_mode_box, 0, 0);
+    lv_obj_set_style_pad_column(nfc_mode_box, 8, 0);
+    lv_obj_set_flex_flow(nfc_mode_box, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(nfc_mode_box, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(nfc_mode_box, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_nfc_mode_spi_lbl = lv_label_create(nfc_mode_box);
+    lv_label_set_text(s_nfc_mode_spi_lbl, "SPI");
+    lv_obj_set_style_text_font(s_nfc_mode_spi_lbl, &lv_font_montserrat_12, 0);
+
+    s_nfc_mode_sw = lv_switch_create(nfc_mode_box);
+    lv_obj_set_style_bg_color(s_nfc_mode_sw, ui_muted_color(), 0);
+    lv_obj_set_style_bg_color(s_nfc_mode_sw, UI_ACCENT_TEAL,
+                              LV_STATE_CHECKED | LV_PART_INDICATOR);
+    lv_obj_add_event_cb(s_nfc_mode_sw, on_nfc_mode_toggle,
+                        LV_EVENT_VALUE_CHANGED, NULL);
+
+    s_nfc_mode_i2c_lbl = lv_label_create(nfc_mode_box);
+    lv_label_set_text(s_nfc_mode_i2c_lbl, "I2C");
+    lv_obj_set_style_text_font(s_nfc_mode_i2c_lbl, &lv_font_montserrat_12, 0);
+
+    settings_nfc_mode_sync_ui();
+
     /* Boot sound row */
     lv_obj_t *sound_row = create_settings_row(cont);
 
@@ -1119,6 +1430,7 @@ void show_settings_screen(void)
     lv_obj_add_event_cb(todd, on_screen_timeout_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
     lv_obj_move_to_index(top_bar, -1);
+    settings_nfc_mode_request_load();
 }
 
 void ui_screen_timeout_init(void)
