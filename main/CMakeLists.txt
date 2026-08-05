@@ -39,6 +39,7 @@ idf_component_register(
         "screens/compromised_data_screen.c"
         "screens/bluetooth_screen.c"
         "screens/deauth_detector_screen.c"
+        "screens/file_admin_ap_screen.c"
         "screens/subghz_screen.c"
         "screens/nfc_screen.c"
         "screens/nfc_read_screen.c"

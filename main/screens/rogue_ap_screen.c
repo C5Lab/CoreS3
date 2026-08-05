@@ -22,7 +22,7 @@ static bool s_sd_collecting = false;
 static esp_timer_handle_t s_sd_timer = NULL;
 
 static wifi_network_t s_net;
-static char s_ap_password[64] = "password123";
+static char s_ap_password[64] = "12345678";
 static lv_obj_t *s_status_lbl = NULL;
 static bool s_running = false;
 

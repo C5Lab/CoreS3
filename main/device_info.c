@@ -48,7 +48,7 @@ static bool probe_nfc_init(void)
     char line[256];
     bool found = false;
 
-    for (int attempt = 0; attempt < 3 && !found; attempt++) {
+    for (int attempt = 0; attempt < 1 && !found; attempt++) {
         if (uart_send_wait_line("init_nfc", "[NFC] detected",
                                 line, sizeof(line), 3000)) {
             found = true;

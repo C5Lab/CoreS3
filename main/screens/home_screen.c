@@ -6,6 +6,7 @@
 #include "compromised_data_screen.h"
 #include "bluetooth_screen.h"
 #include "deauth_detector_screen.h"
+#include "file_admin_ap_screen.h"
 #include "subghz_screen.h"
 #include "nfc_screen.h"
 #include "ir_remote_screen.h"
@@ -94,6 +95,13 @@ static void on_settings(lv_event_t *e)
     show_settings_screen();
 }
 
+static void on_file_admin_ap(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "File Admin AP");
+    show_file_admin_ap_screen();
+}
+
 /* Build the home screen ---------------------------------------------- */
 
 void show_home_screen(void)
@@ -153,5 +161,6 @@ void show_home_screen(void)
     }
     ui_create_tile(grid, LV_SYMBOL_VIDEO,     "IR TV\nPower",              UI_ACCENT_TEAL,           on_ir,              NULL);
     ui_create_tile(grid, LV_SYMBOL_GPS,       "Wardrive",                  UI_ACCENT_TEAL,           on_wardrive,        NULL);
+    ui_create_tile(grid, LV_SYMBOL_FILE,      "File Admin\nAP",           UI_ACCENT_ORANGE,         on_file_admin_ap,   NULL);
     ui_create_tile(grid, LV_SYMBOL_SETTINGS,  "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
 }
