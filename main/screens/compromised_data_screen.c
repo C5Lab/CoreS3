@@ -4,6 +4,7 @@
 #include "uart_handler.h"
 #include "wifi_connect_helper.h"
 #include "psram_dynarr.h"
+#include "cardkb.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -52,6 +53,44 @@ static handshake_entry_t *hs_entries = NULL;
 static int hs_cap = 0;
 static int hs_count = 0;
 
+/* PCAP files under /sdcard/lab/pcaps */
+typedef struct {
+    int  number;
+    char filename[128];
+} pcap_file_entry_t;
+
+static pcap_file_entry_t *pcap_entries = NULL;
+static int pcap_cap = 0;
+static int pcap_count = 0;
+static char pcap_selected[128];
+
+typedef struct {
+    char ip[48];
+    char type[48];
+    char evidence[160];
+} pcap_device_t;
+
+typedef struct {
+    char text[256];
+} pcap_sus_t;
+
+static char pcap_summary[1536];
+static pcap_device_t *pcap_devices = NULL;
+static int pcap_dev_cap = 0;
+static int pcap_dev_count = 0;
+static pcap_sus_t *pcap_sus = NULL;
+static int pcap_sus_cap = 0;
+static int pcap_sus_count = 0;
+
+typedef enum {
+    PCAP_NAV_NONE = 0,
+    PCAP_NAV_LIST,
+    PCAP_NAV_DETAIL,
+} pcap_nav_t;
+
+static pcap_nav_t pcap_nav = PCAP_NAV_NONE;
+static lv_timer_t *pcap_kb_timer = NULL;
+
 /* Timers for timeout-based collection (show_pass has no end marker) */
 static esp_timer_handle_t evil_timer = NULL;
 static esp_timer_handle_t portal_timer = NULL;
@@ -64,7 +103,11 @@ static bool timer_collecting = false;
 static void show_evil_pass_list(void);
 static void show_portal_data_list(void);
 static void show_handshake_list(void);
+static void show_pcap_list(void);
+static void show_pcap_detail(void);
 static void on_wpasec_upload_btn(lv_event_t *e);
+static void on_back_pcap_list(lv_event_t *e);
+static void pcap_kb_stop(void);
 
 /* ================================================================== */
 /*  Navigation: back to home / back to compromised menu                */
@@ -73,6 +116,9 @@ static void on_wpasec_upload_btn(lv_event_t *e);
 static void on_back_home(lv_event_t *e)
 {
     (void)e;
+    uart_stop_collect();
+    uart_set_line_callback(NULL);
+    pcap_kb_stop();
     bsp_display_lock(0);
     show_home_screen();
     bsp_display_unlock();
@@ -81,7 +127,9 @@ static void on_back_home(lv_event_t *e)
 static void on_back_menu(lv_event_t *e)
 {
     (void)e;
+    uart_stop_collect();
     uart_set_line_callback(NULL);
+    pcap_kb_stop();
     if (evil_timer) esp_timer_stop(evil_timer);
     if (portal_timer) esp_timer_stop(portal_timer);
     timer_collecting = false;
@@ -94,10 +142,10 @@ static void on_back_menu(lv_event_t *e)
 /*  Helper: create a loading screen with spinner                       */
 /* ================================================================== */
 
-static void show_loading(const char *title, const char *msg)
+static void show_loading_ex(const char *title, const char *msg, lv_event_cb_t on_back)
 {
     lv_obj_t *scr = ui_screen_clear();
-    ui_create_top_bar(scr, title, on_back_menu, NULL);
+    ui_create_top_bar(scr, title, on_back, NULL);
 
     lv_obj_t *center = lv_obj_create(scr);
     lv_obj_set_size(center, LV_PCT(100), 240 - 36);
@@ -118,6 +166,11 @@ static void show_loading(const char *title, const char *msg)
     lv_label_set_text(lbl, msg);
     lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+}
+
+static void show_loading(const char *title, const char *msg)
+{
+    show_loading_ex(title, msg, on_back_menu);
 }
 
 /* ================================================================== */
@@ -598,6 +651,460 @@ static void on_handshakes(lv_event_t *e)
 }
 
 /* ================================================================== */
+/*  PCAPs: list_dir + pcap_analyze                                     */
+/* ================================================================== */
+
+static void pcap_kb_stop(void)
+{
+    if (pcap_kb_timer) {
+        lv_timer_delete(pcap_kb_timer);
+        pcap_kb_timer = NULL;
+    }
+    pcap_nav = PCAP_NAV_NONE;
+}
+
+static void pcap_kb_poll(lv_timer_t *t)
+{
+    (void)t;
+    uint8_t key = cardkb_read_key();
+    if (key == 0) return;
+    if (key == 0x1B || key == 0x08 || key == 0x7F) {
+        if (pcap_nav == PCAP_NAV_DETAIL)
+            on_back_pcap_list(NULL);
+        else
+            on_back_menu(NULL);
+    }
+}
+
+static void pcap_kb_start(pcap_nav_t nav)
+{
+    pcap_kb_stop();
+    pcap_nav = nav;
+    pcap_kb_timer = lv_timer_create(pcap_kb_poll, 100, NULL);
+}
+
+static void on_back_pcap_list(lv_event_t *e)
+{
+    (void)e;
+    uart_stop_collect();
+    uart_set_line_callback(NULL);
+    pcap_kb_stop();
+    bsp_display_lock(0);
+    show_pcap_list();
+    bsp_display_unlock();
+}
+
+/* Montserrat lacks em/en dashes from firmware text — map to ASCII '-'. */
+static size_t pcap_copy_ascii(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0) return 0;
+    dst[0] = '\0';
+    if (!src) return 0;
+
+    size_t di = 0;
+    const unsigned char *p = (const unsigned char *)src;
+    while (*p && di + 1 < dst_sz) {
+        /* U+2014 em dash (—) and U+2013 en dash (–): UTF-8 E2 80 94 / E2 80 93 */
+        if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] == 0x94 || p[2] == 0x93)) {
+            dst[di++] = '-';
+            p += 3;
+            continue;
+        }
+        /* Skip other non-ASCII multi-byte sequences that would show as boxes */
+        if (*p >= 0x80) {
+            if ((*p & 0xE0) == 0xC0 && p[1]) { p += 2; continue; }
+            if ((*p & 0xF0) == 0xE0 && p[1] && p[2]) { p += 3; continue; }
+            if ((*p & 0xF8) == 0xF0 && p[1] && p[2] && p[3]) { p += 4; continue; }
+            p++;
+            continue;
+        }
+        dst[di++] = (char)*p++;
+    }
+    dst[di] = '\0';
+    return di;
+}
+
+static void pcap_append_summary(const char *line)
+{
+    if (!line || !line[0]) return;
+
+    char cleaned[512];
+    pcap_copy_ascii(cleaned, sizeof(cleaned), line);
+    if (!cleaned[0]) return;
+
+    size_t cur = strlen(pcap_summary);
+    size_t add = strlen(cleaned);
+    if (cur > 0) {
+        if (cur + 1 >= sizeof(pcap_summary)) return;
+        pcap_summary[cur++] = '\n';
+        pcap_summary[cur] = '\0';
+    }
+    if (cur + add >= sizeof(pcap_summary))
+        add = sizeof(pcap_summary) - cur - 1;
+    if (add == 0) return;
+    memcpy(pcap_summary + cur, cleaned, add);
+    pcap_summary[cur + add] = '\0';
+}
+
+static void pcap_truncate_ip(char *ip, size_t ip_sz)
+{
+    /* Keep display short on 320px — ellipsize long IPv6. */
+    const size_t max_show = 22;
+    size_t n = strlen(ip);
+    if (n <= max_show || ip_sz < max_show + 1) return;
+    ip[max_show - 3] = '.';
+    ip[max_show - 2] = '.';
+    ip[max_show - 1] = '.';
+    ip[max_show] = '\0';
+}
+
+static bool pcap_parse_device_line(const char *line, pcap_device_t *dev)
+{
+    if (!line || !dev) return false;
+    while (*line == ' ') line++;
+    if (!*line) return false;
+    if (line[0] == '-') return false;
+    if (strncmp(line, "IP", 2) == 0 && (line[2] == ' ' || line[2] == '\0'))
+        return false;
+
+    const char *p = line;
+    const char *ip_start = p;
+    while (*p && *p != ' ') p++;
+    size_t ip_len = (size_t)(p - ip_start);
+    if (ip_len == 0 || ip_len >= sizeof(dev->ip)) return false;
+    memcpy(dev->ip, ip_start, ip_len);
+    dev->ip[ip_len] = '\0';
+    pcap_truncate_ip(dev->ip, sizeof(dev->ip));
+
+    while (*p == ' ') p++;
+    if (!*p) return false;
+
+    const char *type_start = p;
+    while (*p) {
+        if (p[0] == ' ' && p[1] == ' ') break;
+        p++;
+    }
+    size_t type_len = (size_t)(p - type_start);
+    while (type_len > 0 && type_start[type_len - 1] == ' ') type_len--;
+    if (type_len == 0) return false;
+    {
+        char tmp[64];
+        if (type_len >= sizeof(tmp)) type_len = sizeof(tmp) - 1;
+        memcpy(tmp, type_start, type_len);
+        tmp[type_len] = '\0';
+        pcap_copy_ascii(dev->type, sizeof(dev->type), tmp);
+        if (!dev->type[0]) return false;
+    }
+
+    while (*p == ' ') p++;
+    pcap_copy_ascii(dev->evidence, sizeof(dev->evidence), p[0] ? p : "-");
+    return true;
+}
+
+static void pcap_parse_analyze(const char **lines, int line_count)
+{
+    pcap_summary[0] = '\0';
+    pcap_dev_count = 0;
+    pcap_sus_count = 0;
+
+    enum { SEC_NONE, SEC_SUMMARY, SEC_DEVICES, SEC_SUS } sec = SEC_NONE;
+
+    for (int i = 0; i < line_count; i++) {
+        const char *line = lines[i];
+        if (!line) continue;
+
+        if (strstr(line, "=== END ===") != NULL) break;
+        if (strstr(line, "full Zeek dump") != NULL) continue;
+
+        if (strstr(line, "=== PCAP SUMMARY ===") != NULL) {
+            sec = SEC_SUMMARY;
+            continue;
+        }
+        if (strcmp(line, "Devices") == 0) {
+            sec = SEC_DEVICES;
+            continue;
+        }
+        if (strcmp(line, "Suspicious") == 0) {
+            sec = SEC_SUS;
+            continue;
+        }
+
+        if (sec == SEC_SUMMARY) {
+            if (strncmp(line, "file:", 5) == 0) continue;
+            if (strncmp(line, "PCAP:", 5) == 0) continue;
+            pcap_append_summary(line);
+        } else if (sec == SEC_DEVICES) {
+            if (!psram_dynarr_ensure((void **)&pcap_devices, &pcap_dev_cap,
+                                     pcap_dev_count + 1, sizeof(*pcap_devices),
+                                     COMPRO_HARD_CAP))
+                break;
+            if (pcap_parse_device_line(line, &pcap_devices[pcap_dev_count]))
+                pcap_dev_count++;
+        } else if (sec == SEC_SUS) {
+            const char *p = line;
+            while (*p == ' ') p++;
+            if (p[0] != '-') continue;
+            p++;
+            while (*p == ' ') p++;
+            if (!*p) continue;
+            if (!psram_dynarr_ensure((void **)&pcap_sus, &pcap_sus_cap,
+                                     pcap_sus_count + 1, sizeof(*pcap_sus),
+                                     COMPRO_HARD_CAP))
+                break;
+            pcap_copy_ascii(pcap_sus[pcap_sus_count].text,
+                            sizeof(pcap_sus[0].text), p);
+            pcap_sus_count++;
+        }
+    }
+}
+
+static lv_obj_t *pcap_section_header(lv_obj_t *parent, const char *title,
+                                     lv_color_t accent)
+{
+    lv_obj_t *lbl = lv_label_create(parent);
+    lv_label_set_text(lbl, title);
+    lv_obj_set_style_text_color(lbl, accent, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(lbl, LV_PCT(100));
+    return lbl;
+}
+
+static void show_pcap_detail(void)
+{
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "PCAP Analysis", on_back_pcap_list, NULL);
+    pcap_kb_start(PCAP_NAV_DETAIL);
+
+    lv_obj_t *scroll = lv_obj_create(scr);
+    lv_obj_set_size(scroll, LV_PCT(100), 240 - 36);
+    lv_obj_set_pos(scroll, 0, 36);
+    lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(scroll, 0, 0);
+    lv_obj_set_style_pad_all(scroll, 4, 0);
+    lv_obj_set_style_pad_row(scroll, 4, 0);
+    lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
+
+    if (pcap_selected[0]) {
+        lv_obj_t *file_lbl = lv_label_create(scroll);
+        lv_label_set_text(file_lbl, pcap_selected);
+        lv_obj_set_style_text_color(file_lbl, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(file_lbl, &lv_font_montserrat_10, 0);
+        lv_obj_set_width(file_lbl, LV_PCT(100));
+        lv_label_set_long_mode(file_lbl, LV_LABEL_LONG_DOT);
+    }
+
+    pcap_section_header(scroll, "Summary", UI_ACCENT_CYAN);
+    lv_obj_t *sum_card = lv_obj_create(scroll);
+    lv_obj_set_size(sum_card, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(sum_card, ui_card_color(), 0);
+    lv_obj_set_style_bg_opa(sum_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(sum_card, 6, 0);
+    lv_obj_set_style_border_width(sum_card, 0, 0);
+    lv_obj_set_style_pad_all(sum_card, 6, 0);
+
+    lv_obj_t *sum_lbl = lv_label_create(sum_card);
+    lv_label_set_text(sum_lbl,
+                      pcap_summary[0] ? pcap_summary : "No summary available.");
+    lv_obj_set_style_text_color(sum_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_font(sum_lbl, &lv_font_montserrat_10, 0);
+    lv_obj_set_width(sum_lbl, LV_PCT(100));
+    lv_label_set_long_mode(sum_lbl, LV_LABEL_LONG_WRAP);
+
+    pcap_section_header(scroll, "Devices", UI_ACCENT_CYAN);
+    if (pcap_dev_count == 0) {
+        lv_obj_t *empty = lv_label_create(scroll);
+        lv_label_set_text(empty, "No devices reported.");
+        lv_obj_set_style_text_color(empty, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_10, 0);
+    } else {
+        for (int i = 0; i < pcap_dev_count; i++) {
+            lv_obj_t *card = lv_obj_create(scroll);
+            lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(card, ui_card_color(), 0);
+            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(card, 6, 0);
+            lv_obj_set_style_border_width(card, 0, 0);
+            lv_obj_set_style_pad_all(card, 5, 0);
+            lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+            lv_obj_set_style_pad_row(card, 1, 0);
+
+            lv_obj_t *ip_lbl = lv_label_create(card);
+            lv_label_set_text(ip_lbl, pcap_devices[i].ip);
+            lv_obj_set_style_text_color(ip_lbl, UI_ACCENT_CYAN, 0);
+            lv_obj_set_style_text_font(ip_lbl, &lv_font_montserrat_10, 0);
+            lv_obj_set_width(ip_lbl, LV_PCT(100));
+            lv_label_set_long_mode(ip_lbl, LV_LABEL_LONG_DOT);
+
+            lv_obj_t *type_lbl = lv_label_create(card);
+            lv_label_set_text(type_lbl, pcap_devices[i].type);
+            lv_obj_set_style_text_color(type_lbl, ui_muted_color(), 0);
+            lv_obj_set_style_text_font(type_lbl, &lv_font_montserrat_10, 0);
+            lv_obj_set_width(type_lbl, LV_PCT(100));
+            lv_label_set_long_mode(type_lbl, LV_LABEL_LONG_WRAP);
+
+            lv_obj_t *ev_lbl = lv_label_create(card);
+            lv_label_set_text(ev_lbl, pcap_devices[i].evidence);
+            lv_obj_set_style_text_color(ev_lbl, ui_text_color(), 0);
+            lv_obj_set_style_text_font(ev_lbl, &lv_font_montserrat_10, 0);
+            lv_obj_set_width(ev_lbl, LV_PCT(100));
+            lv_label_set_long_mode(ev_lbl, LV_LABEL_LONG_WRAP);
+        }
+    }
+
+    pcap_section_header(scroll, "Suspicious", UI_ACCENT_ORANGE);
+    if (pcap_sus_count == 0) {
+        lv_obj_t *empty = lv_label_create(scroll);
+        lv_label_set_text(empty, "No suspicious traffic flagged.");
+        lv_obj_set_style_text_color(empty, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_10, 0);
+    } else {
+        for (int i = 0; i < pcap_sus_count; i++) {
+            lv_obj_t *card = lv_obj_create(scroll);
+            lv_obj_set_size(card, LV_PCT(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(card, ui_card_color(), 0);
+            lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(card, 6, 0);
+            lv_obj_set_style_border_width(card, 0, 0);
+            lv_obj_set_style_pad_all(card, 5, 0);
+
+            lv_obj_t *lbl = lv_label_create(card);
+            lv_label_set_text(lbl, pcap_sus[i].text);
+            lv_obj_set_style_text_color(lbl, UI_ACCENT_ORANGE, 0);
+            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
+            lv_obj_set_width(lbl, LV_PCT(100));
+            lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        }
+    }
+}
+
+static void pcap_analyze_collect_cb(const char **lines, int line_count)
+{
+    pcap_parse_analyze(lines, line_count);
+    ESP_LOGI(TAG, "PCAP analyze: summary=%d chars, devices=%d, sus=%d",
+             (int)strlen(pcap_summary), pcap_dev_count, pcap_sus_count);
+
+    bsp_display_lock(0);
+    show_pcap_detail();
+    bsp_display_unlock();
+}
+
+static void on_pcap_item_clicked(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= pcap_count) return;
+
+    snprintf(pcap_selected, sizeof(pcap_selected), "%s",
+             pcap_entries[idx].filename);
+
+    pcap_kb_stop();
+    show_loading_ex("PCAP Analysis", "Analyzing PCAP...", on_back_pcap_list);
+    pcap_kb_start(PCAP_NAV_DETAIL);
+
+    char cmd[192];
+    snprintf(cmd, sizeof(cmd), "pcap_analyze /sdcard/lab/pcaps/%s",
+             pcap_selected);
+    uart_start_collect("=== END ===", pcap_analyze_collect_cb);
+    uart_send_command(cmd);
+    ESP_LOGI(TAG, "Sent %s", cmd);
+}
+
+static void show_pcap_list(void)
+{
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "PCAPs", on_back_menu, NULL);
+    pcap_kb_start(PCAP_NAV_LIST);
+
+    if (pcap_count == 0) {
+        lv_obj_t *lbl = lv_label_create(scr);
+        lv_label_set_text(lbl, "No PCAP files found.");
+        lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_center(lbl);
+        return;
+    }
+
+    lv_obj_t *list = lv_obj_create(scr);
+    lv_obj_set_size(list, LV_PCT(100), 240 - 36);
+    lv_obj_set_pos(list, 0, 36);
+    lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 4, 0);
+    lv_obj_set_style_pad_row(list, 3, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+
+    for (int i = 0; i < pcap_count; i++) {
+        lv_obj_t *btn = lv_btn_create(list);
+        lv_obj_set_size(btn, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
+        lv_obj_set_style_bg_color(btn, UI_ACCENT_CYAN, LV_STATE_PRESSED);
+        lv_obj_set_style_radius(btn, 6, 0);
+        lv_obj_set_style_pad_all(btn, 6, 0);
+        lv_obj_add_event_cb(btn, on_pcap_item_clicked, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, pcap_entries[i].filename);
+        lv_obj_set_style_text_color(lbl, UI_ACCENT_CYAN, 0);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_10, 0);
+        lv_obj_set_width(lbl, LV_PCT(100));
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+    }
+}
+
+static void pcap_list_collect_cb(const char **lines, int line_count)
+{
+    pcap_count = 0;
+    bool header_found = false;
+
+    for (int i = 0; i < line_count; i++) {
+        const char *line = lines[i];
+
+        if (strstr(line, "Files in") != NULL) {
+            header_found = true;
+            continue;
+        }
+        if (strstr(line, "Found") != NULL && strstr(line, "file(s)") != NULL)
+            break;
+        if (!header_found) continue;
+
+        int num;
+        char filename[128];
+        if (sscanf(line, "%d %127[^\n]", &num, filename) == 2) {
+            if (!psram_dynarr_ensure((void **)&pcap_entries, &pcap_cap,
+                                     pcap_count + 1, sizeof(*pcap_entries),
+                                     COMPRO_HARD_CAP)) {
+                ESP_LOGW(TAG, "pcap list cap reached at %d", pcap_count);
+                break;
+            }
+            pcap_entries[pcap_count].number = num;
+            snprintf(pcap_entries[pcap_count].filename,
+                     sizeof(pcap_entries[0].filename), "%s", filename);
+            pcap_count++;
+        }
+    }
+
+    ESP_LOGI(TAG, "PCAP list: %d files", pcap_count);
+    bsp_display_lock(0);
+    show_pcap_list();
+    bsp_display_unlock();
+}
+
+static void on_pcaps(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "PCAPs selected");
+
+    pcap_count = 0;
+    pcap_selected[0] = '\0';
+
+    show_loading("PCAPs", "Loading PCAP files...");
+
+    uart_start_collect("Found", pcap_list_collect_cb);
+    uart_send_command("list_dir /sdcard/lab/pcaps/");
+}
+
+/* ================================================================== */
 /*  WPA-SEC upload flow                                                */
 /*                                                                     */
 /*  Mirrors the Wardrive upload flow (wardrive_screen.c): check the    */
@@ -937,11 +1444,13 @@ static void ws_start_upload(void)
 }
 
 /* ================================================================== */
-/*  Main menu: 3 tiles                                                 */
+/*  Main menu: 4 tiles                                                 */
 /* ================================================================== */
 
 void show_compromised_data_screen(void)
 {
+    pcap_kb_stop();
+
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Compromised Data", on_back_home, NULL);
 
@@ -961,4 +1470,5 @@ void show_compromised_data_screen(void)
     ui_create_tile(grid, LV_SYMBOL_EYE_CLOSE, "Evil Twin\nPasswords", UI_ACCENT_GREEN,  on_evil_passwords, NULL);
     ui_create_tile(grid, LV_SYMBOL_FILE,      "Portal\nData",         UI_ACCENT_PURPLE, on_portal_data,    NULL);
     ui_create_tile(grid, LV_SYMBOL_DOWNLOAD,  "Handshakes",           UI_ACCENT_ORANGE, on_handshakes,     NULL);
+    ui_create_tile(grid, LV_SYMBOL_SAVE,      "PCAPs",                UI_ACCENT_CYAN,   on_pcaps,          NULL);
 }
