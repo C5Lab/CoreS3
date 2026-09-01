@@ -23,6 +23,7 @@ idf_component_register(
         "screens/attack_select_screen.c"
         "screens/arp_poison_screen.c"
         "screens/rogue_ap_screen.c"
+        "screens/rogue_gitm_screen.c"
         "screens/mitm_screen.c"
         "screens/nmap_screen.c"
         "screens/ap_radar_screen.c"

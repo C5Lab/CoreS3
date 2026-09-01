@@ -7,6 +7,7 @@
 #include "sniffer_screen.h"
 #include "arp_poison_screen.h"
 #include "rogue_ap_screen.h"
+#include "rogue_gitm_screen.h"
 #include "mitm_screen.h"
 #include "nmap_screen.h"
 #include "ap_radar_screen.h"
@@ -205,6 +206,14 @@ static void on_rogue_ap(lv_event_t *e)
     show_rogue_ap_screen();
 }
 
+static void on_rogue_gitm(lv_event_t *e)
+{
+    (void)e;
+    wifi_inspect_cancel();
+    if (!require_single("Rogue GITM")) return;
+    show_rogue_gitm_screen();
+}
+
 static void on_mitm(lv_event_t *e)
 {
     (void)e;
@@ -268,6 +277,7 @@ void show_attack_select_screen(void)
         ui_create_tile(grid, LV_SYMBOL_EYE_OPEN, "Sniffer",       UI_ACCENT_GREEN,  on_sniffer,      NULL);
         ui_create_tile(grid, LV_SYMBOL_SHUFFLE,  "ARP",           UI_ACCENT_PURPLE, on_arp,          NULL);
         ui_create_tile(grid, LV_SYMBOL_WIFI,     "Rogue AP",      UI_ACCENT_CYAN,   on_rogue_ap,     NULL);
+        ui_create_tile(grid, LV_SYMBOL_LOOP,     "Rogue\nGITM",   UI_ACCENT_ORANGE, on_rogue_gitm,   NULL);
         ui_create_tile(grid, LV_SYMBOL_COPY,     "MITM",          UI_ACCENT_TEAL,   on_mitm,         NULL);
         ui_create_tile(grid, LV_SYMBOL_LIST,     "Nmap",          UI_ACCENT_GREEN,  on_nmap,         NULL);
         ui_create_tile(grid, LV_SYMBOL_GPS,      "Radar",         UI_ACCENT_BLUE,   on_radar,        NULL);
