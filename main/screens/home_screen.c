@@ -155,9 +155,9 @@ void show_home_screen(void)
     ui_create_tile(grid, LV_SYMBOL_CHARGE,    "Deauth\nDetector",          UI_ACCENT_CYAN,           on_deauth_detector, NULL);
     if (device_info_has_subghz()) {
         ui_create_tile(grid, LV_SYMBOL_BARS,  "Sub-GHz",                   UI_ACCENT_PINK,           on_subghz,          NULL);
-        if (device_info_has_nfc()) {
-            ui_create_tile(grid, LV_SYMBOL_USB, "NFC",                     UI_ACCENT_CYAN,           on_nfc,             NULL);
-        }
+    }
+    if (device_info_has_nfc()) {
+        ui_create_tile(grid, LV_SYMBOL_USB, "NFC",                         UI_ACCENT_CYAN,           on_nfc,             NULL);
     }
     ui_create_tile(grid, LV_SYMBOL_VIDEO,     "IR TV\nPower",              UI_ACCENT_TEAL,           on_ir,              NULL);
     ui_create_tile(grid, LV_SYMBOL_GPS,       "Wardrive",                  UI_ACCENT_TEAL,           on_wardrive,        NULL);

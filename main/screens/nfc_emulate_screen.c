@@ -1,5 +1,6 @@
 #include "nfc_emulate_screen.h"
-#include "nfc_list_screen.h"
+#include "nfc_detail_screen.h"
+#include "nfc_parser.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
 #include "cardkb.h"
@@ -9,6 +10,9 @@
 
 static const char *TAG = "nfc_emulate";
 
+static int         s_idx = -1;
+static bool        s_hint_have_data;
+static char        s_hint_type[32];
 static lv_obj_t   *s_status_lbl;
 static lv_obj_t   *s_detail_lbl;
 static lv_timer_t *s_kb_timer;
@@ -20,7 +24,7 @@ static void emulate_collect_cb(const char **lines, int count);
 
 typedef struct {
     char status[80];
-    char detail[120];
+    char detail[160];
     lv_color_t color;
 } emu_snap_t;
 
@@ -37,36 +41,68 @@ static void apply_snap_async(void *unused)
         lv_label_set_text(s_detail_lbl, s_snap.detail);
 }
 
-static void emulate_collect_cb(const char **lines, int count)
+static void fill_capability_copy(const nfc_ui_card_t *card, const char *summary)
 {
-    bool ok = false;
-    bool failed = false;
-    char summary[96] = {0};
+    const char *type = card->type[0] ? card->type :
+                       (s_hint_type[0] ? s_hint_type : summary);
+    bool classic = nfc_type_is_classic(type);
+    bool ul = nfc_type_is_ultralight(type);
+    bool have_data = card->have_data || s_hint_have_data;
 
-    for (int i = 0; i < count; i++) {
-        const char *line = lines[i];
-        if (!line) continue;
-        if (strncmp(line, "[NFC] emulating ", 16) == 0) {
-            snprintf(summary, sizeof(summary), "%s", line + 16);
-            char *use = strstr(summary, ". Use ");
-            if (use) *use = '\0';
-            ok = true;
-        }
-        if (strstr(line, "[NFC] emulate failed") ||
-            strstr(line, "[NFC] no card loaded") ||
-            strstr(line, "[NFC] load failed") ||
-            strstr(line, "[NFC] not found")) {
-            failed = true;
-        }
+    if (card->emulate_full_ul) {
+        snprintf(s_snap.detail, sizeof(s_snap.detail),
+                 "%s\nNTAG/Ultralight pages",
+                 summary[0] ? summary : "");
+        return;
+    }
+    if (card->emulate_uid_only) {
+        snprintf(s_snap.detail, sizeof(s_snap.detail),
+                 "%s\nUID/ATQA/SAK only%s",
+                 summary[0] ? summary : "",
+                 classic ? "\nClassic Crypto1 not emulated" : "");
+        return;
     }
 
-    if (ok) {
+    /* Firmware omitted the capability line — infer from bus + type. */
+    if (nfc_bus_mode == NFC_BUS_MODE_I2C) {
+        snprintf(s_snap.detail, sizeof(s_snap.detail),
+                 "%s\nUID/ATQA/SAK only%s",
+                 summary[0] ? summary : "",
+                 classic ? "\nClassic Crypto1 not emulated" : "");
+        return;
+    }
+
+    if (ul && have_data) {
+        snprintf(s_snap.detail, sizeof(s_snap.detail),
+                 "%s\nNTAG/Ultralight pages",
+                 summary[0] ? summary : "");
+        return;
+    }
+
+    snprintf(s_snap.detail, sizeof(s_snap.detail),
+             "%s\nUID/ATQA/SAK only%s",
+             summary[0] ? summary : "",
+             classic ? "\nClassic Crypto1 not emulated" : "");
+}
+
+static void emulate_collect_cb(const char **lines, int count)
+{
+    nfc_ui_card_t card;
+    nfc_card_reset(&card);
+
+    for (int i = 0; i < count; i++) {
+        if (!lines[i]) continue;
+        nfc_parse_card_line(lines[i], &card);
+    }
+
+    const char *summary = card.have_emulating ? card.emulating_summary : "";
+
+    if (card.have_emulating) {
         s_running = true;
         snprintf(s_snap.status, sizeof(s_snap.status), "Emulating");
-        snprintf(s_snap.detail, sizeof(s_snap.detail),
-                 "%s\nUID/ATQA/SAK only", summary[0] ? summary : "");
+        fill_capability_copy(&card, summary);
         s_snap.color = UI_ACCENT_GREEN;
-    } else if (failed) {
+    } else if (card.emulate_failed || card.no_card_loaded || card.load_failed) {
         s_running = false;
         snprintf(s_snap.status, sizeof(s_snap.status), "Emulate failed");
         snprintf(s_snap.detail, sizeof(s_snap.detail),
@@ -96,8 +132,9 @@ static void teardown(void)
 static void on_back(lv_event_t *e)
 {
     (void)e;
+    int idx = s_idx;
     teardown();
-    show_nfc_list_screen();
+    show_nfc_detail_screen(idx);
 }
 
 static void kb_poll_cb(lv_timer_t *t)
@@ -109,8 +146,15 @@ static void kb_poll_cb(lv_timer_t *t)
         on_back(NULL);
 }
 
+void nfc_emulate_set_card_hint(bool have_data, const char *type)
+{
+    s_hint_have_data = have_data;
+    snprintf(s_hint_type, sizeof(s_hint_type), "%s", type ? type : "");
+}
+
 void show_nfc_emulate_screen(int idx)
 {
+    s_idx = idx;
     s_running = false;
     s_status_lbl = NULL;
     s_detail_lbl = NULL;
@@ -150,11 +194,9 @@ void show_nfc_emulate_screen(int idx)
     lv_obj_set_style_text_color(hint, ui_muted_color(), 0);
     lv_label_set_text(hint, "Back sends stop");
 
-    char cmd[48];
-    snprintf(cmd, sizeof(cmd), "start_nfc_emulate %d", idx);
-    uart_send_command(cmd);
     uart_start_collect("[NFC] END", emulate_collect_cb);
+    uart_send_command("start_nfc_emulate");
 
     s_kb_timer = lv_timer_create(kb_poll_cb, 50, NULL);
-    ESP_LOGI(TAG, "NFC Emulate idx=%d", idx);
+    ESP_LOGI(TAG, "NFC Emulate idx=%d (loaded slot)", idx);
 }

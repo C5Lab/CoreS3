@@ -63,6 +63,7 @@ extern boot_sound_mode_t boot_sound_mode;
 typedef enum {
     NFC_BUS_MODE_SPI = 0,
     NFC_BUS_MODE_I2C = 1,
+    NFC_BUS_MODE_PN532 = 2,
 } nfc_bus_mode_t;
 
 extern nfc_bus_mode_t nfc_bus_mode;

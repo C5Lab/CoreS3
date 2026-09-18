@@ -45,6 +45,7 @@ idf_component_register(
         "screens/nfc_screen.c"
         "screens/nfc_read_screen.c"
         "screens/nfc_list_screen.c"
+        "screens/nfc_detail_screen.c"
         "screens/nfc_emulate_screen.c"
         "screens/subghz_listen_screen.c"
         "screens/subghz_manage_screen.c"

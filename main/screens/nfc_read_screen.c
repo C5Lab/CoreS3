@@ -100,22 +100,8 @@ static void apply_card_to_snap(void)
         return;
     }
 
-    snprintf(s_snap.status, sizeof(s_snap.status), "%s",
-             s_card.type[0] ? s_card.type : "Card");
-    if (s_card.have_atqa_sak) {
-        snprintf(s_snap.detail, sizeof(s_snap.detail),
-                 "UID %s\nATQA %02X %02X  SAK %02X%s",
-                 s_card.uid[0] ? s_card.uid : "--",
-                 s_card.atqa[0], s_card.atqa[1], s_card.sak,
-                 s_card.have_data ? "\nData dumped" : "");
-    } else if (s_card.have_idm) {
-        snprintf(s_snap.detail, sizeof(s_snap.detail), "UID %s\nIDm %s",
-                 s_card.uid[0] ? s_card.uid : "--", s_card.idm);
-    } else {
-        snprintf(s_snap.detail, sizeof(s_snap.detail), "UID %s%s",
-                 s_card.uid[0] ? s_card.uid : "--",
-                 s_card.have_data ? "\nData dumped" : "");
-    }
+    nfc_format_card_detail(&s_card, s_snap.status, sizeof(s_snap.status),
+                           s_snap.detail, sizeof(s_snap.detail));
     s_snap.color = UI_ACCENT_GREEN;
     s_snap.enable_save = true;
     s_have_card = true;

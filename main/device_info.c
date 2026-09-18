@@ -133,6 +133,11 @@ bool device_info_has_nfc(void)
     return s_has_nfc;
 }
 
+void device_info_set_has_nfc(bool has)
+{
+    s_has_nfc = has;
+}
+
 int device_info_nfc_card_count(void)
 {
     return s_nfc_card_count;

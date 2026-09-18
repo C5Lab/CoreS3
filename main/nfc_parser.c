@@ -61,6 +61,10 @@ bool nfc_parse_card_line(const char *line, nfc_ui_card_t *c)
         c->not_detected = true;
         return true;
     }
+    if (strstr(line, "[NFC] detected")) {
+        c->detected = true;
+        return true;
+    }
     if (strstr(line, "[NFC] not initialized")) {
         c->not_initialized = true;
         return true;
@@ -77,9 +81,19 @@ bool nfc_parse_card_line(const char *line, nfc_ui_card_t *c)
         c->no_card_loaded = true;
         return true;
     }
+    if (strstr(line, "[NFC] load failed") ||
+        strstr(line, "[NFC] not found")) {
+        c->load_failed = true;
+        return true;
+    }
     if (strncmp(line, "[NFC] saved: ", 13) == 0) {
         snprintf(c->saved_path, sizeof(c->saved_path), "%s", line + 13);
         c->have_saved = true;
+        return true;
+    }
+    if (strncmp(line, "[NFC] loaded: ", 14) == 0) {
+        snprintf(c->loaded_path, sizeof(c->loaded_path), "%s", line + 14);
+        c->have_loaded = true;
         return true;
     }
     if (strncmp(line, "[NFC] emulating ", 16) == 0) {
@@ -88,6 +102,14 @@ bool nfc_parse_card_line(const char *line, nfc_ui_card_t *c)
         char *use = strstr(c->emulating_summary, ". Use ");
         if (use) *use = '\0';
         c->have_emulating = true;
+        return true;
+    }
+    if (strstr(line, "full NTAG/Ultralight page data emulated")) {
+        c->emulate_full_ul = true;
+        return true;
+    }
+    if (strstr(line, "UID/ATQA/SAK level only")) {
+        c->emulate_uid_only = true;
         return true;
     }
 
@@ -129,4 +151,72 @@ bool nfc_name_is_valid(const char *name)
         return false;
     }
     return true;
+}
+
+void nfc_path_basename(const char *path, char *out, size_t out_len, bool strip_nfc)
+{
+    if (!out || out_len == 0) return;
+    out[0] = '\0';
+    if (!path || !path[0]) return;
+
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+    snprintf(out, out_len, "%s", base);
+
+    if (strip_nfc) {
+        size_t n = strlen(out);
+        if (n > 4 && strcmp(out + n - 4, ".nfc") == 0)
+            out[n - 4] = '\0';
+    }
+}
+
+void nfc_format_card_detail(const nfc_ui_card_t *c,
+                            char *status, size_t status_len,
+                            char *detail, size_t detail_len)
+{
+    if (status && status_len)
+        status[0] = '\0';
+    if (detail && detail_len)
+        detail[0] = '\0';
+    if (!c) return;
+
+    if (status && status_len) {
+        snprintf(status, status_len, "%s", c->type[0] ? c->type : "Card");
+    }
+    if (!detail || !detail_len) return;
+
+    char extra[64] = {0};
+    if (c->have_loaded && c->loaded_path[0])
+        nfc_path_basename(c->loaded_path, extra, sizeof(extra), false);
+
+    if (c->have_atqa_sak) {
+        snprintf(detail, detail_len,
+                 "UID %s\nATQA %02X %02X  SAK %02X%s%s%s",
+                 c->uid[0] ? c->uid : "--",
+                 c->atqa[0], c->atqa[1], c->sak,
+                 c->have_data ? "\nData dumped" : "",
+                 extra[0] ? "\n" : "", extra);
+    } else if (c->have_idm) {
+        snprintf(detail, detail_len, "UID %s\nIDm %s%s%s",
+                 c->uid[0] ? c->uid : "--", c->idm,
+                 extra[0] ? "\n" : "", extra);
+    } else {
+        snprintf(detail, detail_len, "UID %s%s%s%s",
+                 c->uid[0] ? c->uid : "--",
+                 c->have_data ? "\nData dumped" : "",
+                 extra[0] ? "\n" : "", extra);
+    }
+}
+
+bool nfc_type_is_classic(const char *type)
+{
+    return type && strstr(type, "Classic") != NULL;
+}
+
+bool nfc_type_is_ultralight(const char *type)
+{
+    if (!type) return false;
+    return strstr(type, "Ultralight") != NULL ||
+           strstr(type, "NTAG") != NULL ||
+           strstr(type, "MF0UL") != NULL;
 }

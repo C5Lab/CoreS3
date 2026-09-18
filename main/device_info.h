@@ -21,8 +21,11 @@ const char *device_info_subghz_title(void);
 /** True if firmware responded to subghz_status with [SUBGHZ_STATUS]. */
 bool device_info_has_subghz(void);
 
-/** True if init_nfc reported [NFC] detected at boot. */
+/** True if init_nfc reported [NFC] detected (boot probe, hub, or Settings). */
 bool device_info_has_nfc(void);
+
+/** Update the cached NFC-present flag after a later init_nfc probe. */
+void device_info_set_has_nfc(bool has);
 
 /** Number of saved .nfc cards on SD at boot (from nfc_list); 0 if none/unavailable. */
 int device_info_nfc_card_count(void);
