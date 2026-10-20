@@ -18,6 +18,12 @@ idf_component_register(
         "ir_tx.c"
         "ir_db.c"
         "screens/home_screen.c"
+        "screens/sdr_screen.cpp"
+        "sdr/service.cpp"
+        "sdr/settings.cpp"
+        "sdr/spectrum.cpp"
+        "sdr/test_tx.cpp"
+        "sdr/test_tx_frame.cpp"
         "screens/ir_remote_screen.c"
         "screens/wifi_scan_screen.c"
         "screens/attack_select_screen.c"
@@ -61,6 +67,7 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "screens"
+        "sdr"
     REQUIRES
         driver
         esp_driver_uart
@@ -74,6 +81,8 @@ idf_component_register(
         m5stack_core_s3
         lvgl__lvgl
         espressif__led_strip
+        esp_sdr
+        esp-dsp
     EMBED_FILES
         "assets/tv_power.irdb"
 )

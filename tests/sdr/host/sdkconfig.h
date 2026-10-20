@@ -1,0 +1,2 @@
+#pragma once
+#define CONFIG_DSP_MAX_FFT_SIZE 2048

@@ -10,6 +10,7 @@
 #include "subghz_screen.h"
 #include "nfc_screen.h"
 #include "ir_remote_screen.h"
+#include "sdr_screen.h"
 #include "device_info.h"
 #include "ui_helpers.h"
 #include "esp_log.h"
@@ -102,6 +103,12 @@ static void on_file_admin_ap(lv_event_t *e)
     show_file_admin_ap_screen();
 }
 
+static void on_sdr(lv_event_t *e)
+{
+    (void)e;
+    show_sdr_screen();
+}
+
 /* Build the home screen ---------------------------------------------- */
 
 void show_home_screen(void)
@@ -163,4 +170,5 @@ void show_home_screen(void)
     ui_create_tile(grid, LV_SYMBOL_GPS,       "Wardrive",                  UI_ACCENT_TEAL,           on_wardrive,        NULL);
     ui_create_tile(grid, LV_SYMBOL_FILE,      "File Admin\nAP",           UI_ACCENT_ORANGE,         on_file_admin_ap,   NULL);
     ui_create_tile(grid, LV_SYMBOL_SETTINGS,  "Settings",                  lv_color_hex(0x607D8B),   on_settings,        NULL);
+    ui_create_tile(grid, LV_SYMBOL_BARS,      "SDR",                       UI_ACCENT_CYAN,           on_sdr,             NULL);
 }

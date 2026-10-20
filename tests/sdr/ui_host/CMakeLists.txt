@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.16)
+project(sdr_ui_host LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address,undefined -g")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address,undefined -g")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address,undefined")
+get_filename_component(CORES3_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+set(LV_BUILD_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h" CACHE PATH "" FORCE)
+set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "" FORCE)
+set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(CONFIG_LV_USE_THORVG_INTERNAL OFF CACHE BOOL "" FORCE)
+add_subdirectory("${CORES3_ROOT}/managed_components/lvgl__lvgl" lvgl)
+add_executable(test_sdr_ui test_ui.cpp "${CORES3_ROOT}/main/sdr/settings.cpp")
+target_include_directories(test_sdr_ui PRIVATE
+    "${CORES3_ROOT}/tests/sdr/host" "${CORES3_ROOT}/main"
+    "${CORES3_ROOT}/main/sdr" "${CORES3_ROOT}/components/esp_sdr/include")
+target_link_libraries(test_sdr_ui PRIVATE lvgl)
