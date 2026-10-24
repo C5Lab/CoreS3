@@ -4,12 +4,16 @@
 #include "uart_handler.h"
 #include "psram_dynarr.h"
 #include "parse_worker.h"
+#include "janos_sniffer_session.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <ctype.h>
 
 static const char *TAG = "observer";
@@ -22,9 +26,8 @@ static const char *TAG = "observer";
 #define MAX_CLIENTS_PER_NET 32
 #define OBS_PROBE_HARD_CAP  1024
 #define MAX_SD_FILES        32
-#define POLL_INTERVAL_US    (15 * 1000000)
-#define FOCUSED_POLL_US     (5 * 1000000)
-#define LINE_TIMEOUT_US     800000
+#define MAX_VISIBLE_CLIENTS_PER_AP 8
+#define JS_TICK_MS          250
 
 typedef struct {
     char ssid[33];
@@ -64,8 +67,16 @@ static bool poll_collecting = false;
 
 static int  focused_net_idx  = -1;
 static bool deauth_active    = false;
-static int  deauth_net_idx   = -1;
-static int  deauth_cli_idx   = -1;
+static unsigned deauth_client_idx = 0;
+static char deauth_label[40];
+static char deauth_mac[18];
+static char deauth_bssid[18];
+static char deauth_status[48];
+
+static JsSession s_js;
+static SemaphoreHandle_t s_js_mutex = NULL;
+static lv_timer_t *s_js_tick_timer = NULL;
+static JsPhase s_js_seen_phase = JS_EMPTY;
 
 static obs_probe_t *probes = NULL;
 static int  probes_cap         = 0;
@@ -104,6 +115,8 @@ static void show_karma_running(void);
 static void start_poll_timer(int64_t interval);
 static void stop_all(void);
 static void on_scan_complete(const char **lines, int count);
+static void obs_load_clients(void);
+static void obs_js_ensure(void);
 
 /* ================================================================== */
 /*  CSV parsing (scan_networks output)                                 */
@@ -149,39 +162,35 @@ static bool parse_scan_line(const char *line, obs_network_t *net)
     return true;
 }
 
-/* ================================================================== */
-/*  Sniffer results parsing                                            */
-/* ================================================================== */
-
-static bool parse_sniffer_net_line(const char *line, char *ssid_out,
-                                   int *channel, int *cli_count)
+static uint32_t obs_now_ms(void)
 {
-    if (line[0] == ' ' || line[0] == '\t') return false;
-    const char *ch = strstr(line, ", CH");
-    if (!ch) return false;
-
-    int len = ch - line;
-    if (len > 32) len = 32;
-    memcpy(ssid_out, line, len);
-    ssid_out[len] = '\0';
-
-    return sscanf(ch, ", CH%d: %d", channel, cli_count) == 2;
+    return (uint32_t)(esp_timer_get_time() / 1000);
 }
 
-static bool parse_sniffer_cli_line(const char *line, char *mac, int mac_sz)
+static bool obs_js_send(void *ctx, const char *command)
 {
-    if (line[0] != ' ') return false;
-    const char *p = line;
-    while (*p == ' ' || *p == '\t') p++;
-    if (strlen(p) >= 17 && p[2] == ':' && p[5] == ':') {
-        strncpy(mac, p, mac_sz - 1);
-        mac[mac_sz - 1] = '\0';
-        int l = strlen(mac);
-        while (l > 0 && (mac[l-1] == ' ' || mac[l-1] == '\r' || mac[l-1] == '\n'))
-            mac[--l] = '\0';
-        return true;
+    (void)ctx;
+    uart_send_command(command);
+    return true;
+}
+
+static void obs_js_ensure(void)
+{
+    if (!s_js_mutex) {
+        s_js_mutex = xSemaphoreCreateMutex();
+        js_init(&s_js, obs_js_send, NULL);
     }
-    return false;
+}
+
+static bool obs_js_lock(void)
+{
+    obs_js_ensure();
+    return s_js_mutex && xSemaphoreTake(s_js_mutex, pdMS_TO_TICKS(50)) == pdTRUE;
+}
+
+static void obs_js_unlock(void)
+{
+    if (s_js_mutex) xSemaphoreGive(s_js_mutex);
 }
 
 /* ================================================================== */
@@ -197,120 +206,63 @@ static void ensure_timer(esp_timer_handle_t *handle, const char *name,
 }
 
 /* ================================================================== */
-/*  Poll sniffer results (line callback + timeout)                     */
+/*  Client snapshot (show_sniffer_clients)                             */
 /* ================================================================== */
 
-static int poll_parse_net = -1;
-
-static void poll_done_cb(void *arg)
+static void obs_js_line_cb(const char *line)
 {
-    (void)arg;
-    if (!poll_collecting) return;
-    poll_collecting = false;
-    uart_set_line_callback(NULL);
-
-    sort_networks();
-    ESP_LOGI(TAG, "Poll done: %d networks", obs_net_count);
-
-    if (!ui_display_lock_wait()) {
-        ESP_LOGW(TAG, "poll_done_cb: display lock failed");
-        return;
-    }
-    if (obs_list) {
-        rebuild_list_content();
-    } else {
-        show_main_view();
-    }
-    ui_display_unlock_safe();
+    if (!obs_js_lock()) return;
+    js_line(&s_js, line, obs_now_ms());
+    obs_js_unlock();
 }
 
-static void poll_line_cb(const char *line)
+static void obs_apply_phase_ui(void);
+
+static void obs_js_tick_cb(lv_timer_t *t)
 {
-    if (!poll_collecting) return;
+    (void)t;
+    if (!obs_js_lock()) return;
+    js_tick(&s_js, obs_now_ms());
+    JsPhase phase = s_js.phase;
+    bool phase_changed = phase != s_js_seen_phase;
+    s_js_seen_phase = phase;
+    obs_js_unlock();
+    if (phase_changed)
+        obs_apply_phase_ui();
+}
 
-    if (strstr(line, "No APs with clients found")) return;
-    if (strstr(line, "Sniffer packet count:")) return;
+static void obs_js_start_tick_timer(void)
+{
+    if (!s_js_tick_timer)
+        s_js_tick_timer = lv_timer_create(obs_js_tick_cb, JS_TICK_MS, NULL);
+}
 
-    char ssid[33];
-    int channel, cli_count;
-    if (parse_sniffer_net_line(line, ssid, &channel, &cli_count)) {
-        /* match to a distinct, not-yet-claimed network row so multiple APs
-           sharing an SSID (e.g. two "AX3" on CH108) map to separate rows */
-        int matched = -1;
-        /* pass 1: same SSID and channel, not yet claimed this poll */
-        for (int i = 0; i < obs_net_count; i++) {
-            if (!obs_nets[i].matched_this_poll &&
-                obs_nets[i].channel == channel &&
-                strcmp(obs_nets[i].ssid, ssid) == 0) { matched = i; break; }
-        }
-        /* pass 2: same SSID, not yet claimed (channel may have changed) */
-        if (matched < 0) {
-            for (int i = 0; i < obs_net_count; i++) {
-                if (!obs_nets[i].matched_this_poll &&
-                    strcmp(obs_nets[i].ssid, ssid) == 0) { matched = i; break; }
-            }
-        }
-        if (matched < 0 &&
-            psram_dynarr_ensure((void **)&obs_nets, &obs_nets_cap,
-                                obs_net_count + 1, sizeof(*obs_nets),
-                                OBS_NET_HARD_CAP)) {
-            matched = obs_net_count;
-            memset(&obs_nets[matched], 0, sizeof(obs_network_t));
-            memcpy(obs_nets[matched].ssid, ssid, sizeof(obs_nets[matched].ssid) - 1);
-            obs_nets[matched].ssid[sizeof(obs_nets[matched].ssid) - 1] = '\0';
-            obs_nets[matched].channel = channel;
-            obs_nets[matched].scan_index = 0;
-            obs_net_count++;
-        }
-        if (matched >= 0) {
-            obs_nets[matched].matched_this_poll = true;
-            obs_nets[matched].channel = channel;
-            obs_nets[matched].client_count = 0;
-            memset(obs_nets[matched].clients, 0, sizeof(obs_nets[matched].clients));
-            poll_parse_net = matched;
-        }
-        esp_timer_stop(line_timer);
-        esp_timer_start_once(line_timer, LINE_TIMEOUT_US);
-        return;
-    }
-
-    char mac[18];
-    if (parse_sniffer_cli_line(line, mac, sizeof(mac))) {
-        if (poll_parse_net >= 0 && poll_parse_net < obs_net_count) {
-            obs_network_t *n = &obs_nets[poll_parse_net];
-            if (n->client_count < MAX_CLIENTS_PER_NET) {
-                memcpy(n->clients[n->client_count], mac, sizeof(n->clients[0]) - 1);
-                n->clients[n->client_count][sizeof(n->clients[0]) - 1] = '\0';
-                n->client_count++;
-            }
-        }
-        esp_timer_stop(line_timer);
-        esp_timer_start_once(line_timer, LINE_TIMEOUT_US);
+static void obs_js_stop_tick_timer(void)
+{
+    if (s_js_tick_timer) {
+        lv_timer_delete(s_js_tick_timer);
+        s_js_tick_timer = NULL;
     }
 }
 
-static void poll_timer_cb(void *arg)
+static void obs_load_clients(void)
 {
-    (void)arg;
-    if (!obs_running || poll_collecting) return;
-
-    poll_collecting = true;
-    poll_parse_net = -1;
-
-    for (int i = 0; i < obs_net_count; i++)
-        obs_nets[i].matched_this_poll = false;
-
-    ensure_timer(&line_timer, "obs_line", poll_done_cb);
-    uart_set_line_callback(poll_line_cb);
-    esp_timer_start_once(line_timer, 2000000);
-    uart_send_command("show_sniffer_results");
+    obs_js_ensure();
+    uart_set_line_callback(obs_js_line_cb);
+    if (!obs_js_lock()) return;
+    bool ok = js_load(&s_js, obs_now_ms());
+    s_js_seen_phase = s_js.phase;
+    obs_js_unlock();
+    poll_collecting = ok;
+    obs_js_start_tick_timer();
+    if (status_label)
+        lv_label_set_text(status_label, ok ? "Loading clients..." : "UART TX failed");
 }
 
 static void start_poll_timer(int64_t interval)
 {
-    ensure_timer(&poll_timer, "obs_poll", poll_timer_cb);
-    esp_timer_stop(poll_timer);
-    esp_timer_start_periodic(poll_timer, interval);
+    (void)interval;
+    obs_load_clients();
 }
 
 /* ================================================================== */
@@ -334,11 +286,21 @@ static void stop_all(void)
     obs_list = NULL;
     status_label = NULL;
 
+    obs_js_stop_tick_timer();
     uart_set_line_callback(NULL);
     if (poll_timer) esp_timer_stop(poll_timer);
     if (line_timer) esp_timer_stop(line_timer);
     if (probe_timer) esp_timer_stop(probe_timer);
     if (sd_timer) esp_timer_stop(sd_timer);
+
+    if (obs_js_lock()) {
+        if (s_js.phase == JS_STARTING || s_js.phase == JS_ACTIVE)
+            js_cancel(&s_js);
+        js_free(&s_js);
+        js_init(&s_js, obs_js_send, NULL);
+        s_js_seen_phase = JS_EMPTY;
+        obs_js_unlock();
+    }
 
     uart_send_command("stop");
 }
@@ -364,6 +326,7 @@ static void resume_sniffer(void)
 
     uart_set_line_callback(NULL);
     uart_send_command("stop");
+    uart_send_command("unselect_networks");
 
     /* Fast path: reuse the firmware's existing scan results. If that store was
      * lost (e.g. a previous full sniff/scan was aborted), the firmware replies
@@ -375,10 +338,10 @@ static void resume_sniffer(void)
     if (need_rescan) {
         uart_start_collect("Scan results printed", on_scan_complete);
         uart_send_command("scan_networks");
-        return; /* on_scan_complete resumes sniffer + poll + main view */
+        return; /* on_scan_complete resumes sniffer + snapshot */
     }
 
-    start_poll_timer(POLL_INTERVAL_US);
+    obs_load_clients();
 }
 
 /* ================================================================== */
@@ -389,13 +352,15 @@ static lv_obj_t *deauth_btn_lbl = NULL;
 
 static void close_deauth_popup(void)
 {
-    if (deauth_active) {
-        deauth_active = false;
-        uart_send_command("stop");
+    if (obs_js_lock()) {
+        if (s_js.phase == JS_STARTING || s_js.phase == JS_ACTIVE)
+            js_cancel(&s_js);
+        obs_js_unlock();
     }
+    deauth_active = false;
     if (popup_obj) { lv_obj_del(popup_obj); popup_obj = NULL; }
     deauth_btn_lbl = NULL;
-    resume_sniffer();
+    uart_set_line_callback(obs_js_line_cb);
     if (!ui_display_lock_wait()) return;
     show_main_view();
     ui_display_unlock_safe();
@@ -411,42 +376,43 @@ static void deauth_btn_cb(lv_event_t *e)
     }
 
     if (!deauth_active) {
-        if (deauth_net_idx < 0 || deauth_net_idx >= obs_net_count) return;
-        obs_network_t *net = &obs_nets[deauth_net_idx];
-        if (deauth_cli_idx < 0 || deauth_cli_idx >= net->client_count) return;
-
-        if (poll_timer) esp_timer_stop(poll_timer);
-        uart_set_line_callback(NULL);
-
-        uart_send_command("stop");
-
-        char cmd[64];
-        snprintf(cmd, sizeof(cmd), "select_networks %d", net->scan_index);
-        uart_send_command(cmd);
-
-        snprintf(cmd, sizeof(cmd), "select_stations %s", net->clients[deauth_cli_idx]);
-        uart_send_command(cmd);
-
-        uart_send_command("start_deauth");
-
-        deauth_active = true;
+        uart_set_line_callback(obs_js_line_cb);
+        bool started = false;
+        if (obs_js_lock()) {
+            started = js_start(&s_js, deauth_client_idx, obs_now_ms());
+            if (!started && s_js.error[0])
+                snprintf(deauth_status, sizeof(deauth_status), "%s", s_js.error);
+            s_js_seen_phase = s_js.phase;
+            obs_js_unlock();
+        }
         if (deauth_btn_lbl)
-            lv_label_set_text(deauth_btn_lbl, LV_SYMBOL_CLOSE " STOP");
+            lv_label_set_text(deauth_btn_lbl, started ? "Starting..." : "Retry");
+        obs_js_start_tick_timer();
     } else {
         close_deauth_popup();
     }
 }
 
-static void show_deauth_popup(int net_idx, int cli_idx)
+static void show_deauth_popup(unsigned client_idx)
 {
-    if (net_idx < 0 || net_idx >= obs_net_count) return;
-    obs_network_t *net = &obs_nets[net_idx];
-    if (cli_idx < 0 || cli_idx >= net->client_count) return;
-    if (popup_obj) return;
+    if (!obs_js_lock()) return;
+    bool ready = s_js.phase == JS_READY && s_js.model.complete && !s_js.model.failed
+                 && client_idx < s_js.model.client_count;
+    sc_ap_t ap = {0};
+    sc_client_t client = {0};
+    if (ready) {
+        client = s_js.model.clients[client_idx];
+        ap = s_js.model.aps[client.ap];
+    }
+    obs_js_unlock();
+    if (!ready || popup_obj) return;
 
-    deauth_net_idx = net_idx;
-    deauth_cli_idx = cli_idx;
+    deauth_client_idx = client_idx;
     deauth_active = false;
+    deauth_status[0] = 0;
+    sc_ap_label(&ap, deauth_label, sizeof(deauth_label));
+    sc_mac_text(deauth_mac, client.mac);
+    sc_mac_text(deauth_bssid, ap.bssid);
 
     if (poll_timer) esp_timer_stop(poll_timer);
 
@@ -489,29 +455,26 @@ static void show_deauth_popup(int net_idx, int cli_idx)
     lv_obj_center(x_lbl);
 
     /* info */
-    const char *ssid_d = net->ssid[0] ? net->ssid : "(hidden)";
     lv_obj_t *lbl1 = lv_label_create(popup_obj);
     char t1[64];
-    snprintf(t1, sizeof(t1), "Net: %s  CH%d", ssid_d, net->channel);
+    snprintf(t1, sizeof(t1), "Net: %s", deauth_label);
     lv_label_set_text(lbl1, t1);
     lv_obj_set_style_text_color(lbl1, ui_text_color(), 0);
     lv_obj_set_style_text_font(lbl1, &lv_font_montserrat_12, 0);
 
     lv_obj_t *lbl2 = lv_label_create(popup_obj);
     char t2[48];
-    snprintf(t2, sizeof(t2), "Client: %s", net->clients[cli_idx]);
+    snprintf(t2, sizeof(t2), "Client: %s", deauth_mac);
     lv_label_set_text(lbl2, t2);
     lv_obj_set_style_text_color(lbl2, UI_ACCENT_RED, 0);
     lv_obj_set_style_text_font(lbl2, &lv_font_montserrat_12, 0);
 
-    if (net->bssid[0]) {
-        lv_obj_t *lbl3 = lv_label_create(popup_obj);
-        char t3[48];
-        snprintf(t3, sizeof(t3), "BSSID: %s", net->bssid);
-        lv_label_set_text(lbl3, t3);
-        lv_obj_set_style_text_color(lbl3, ui_muted_color(), 0);
-        lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_10, 0);
-    }
+    lv_obj_t *lbl3 = lv_label_create(popup_obj);
+    char t3[48];
+    snprintf(t3, sizeof(t3), "AP: %s", deauth_bssid);
+    lv_label_set_text(lbl3, t3);
+    lv_obj_set_style_text_color(lbl3, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(lbl3, &lv_font_montserrat_10, 0);
 
     /* deauth button */
     lv_obj_t *d_btn = lv_btn_create(popup_obj);
@@ -537,40 +500,32 @@ static void close_net_popup(lv_event_t *e)
     (void)e;
     if (popup_obj) { lv_obj_del(popup_obj); popup_obj = NULL; }
     net_popup_clients = NULL;
-    resume_sniffer();
-    if (!ui_display_lock_wait()) return;
-    show_main_view();
-    ui_display_unlock_safe();
+    focused_net_idx = -1;
 }
 
 static void net_popup_cli_click(lv_event_t *e)
 {
-    int cli_idx = (int)(intptr_t)lv_event_get_user_data(e);
+    unsigned cli_idx = (unsigned)(uintptr_t)lv_event_get_user_data(e);
     if (popup_obj) { lv_obj_del(popup_obj); popup_obj = NULL; }
     net_popup_clients = NULL;
 
     if (!ui_display_lock_wait()) return;
-    show_deauth_popup(focused_net_idx, cli_idx);
+    show_deauth_popup(cli_idx);
     ui_display_unlock_safe();
 }
 
-static void show_network_popup(int net_idx)
+static void show_network_popup(int ap_idx)
 {
-    if (net_idx < 0 || net_idx >= obs_net_count) return;
-    if (popup_obj) return;
-    obs_network_t *net = &obs_nets[net_idx];
+    if (!obs_js_lock()) return;
+    bool ready = s_js.phase == JS_READY && s_js.model.complete && !s_js.model.failed
+                 && ap_idx >= 0 && (unsigned)ap_idx < s_js.model.ap_count;
+    sc_ap_t ap = {0};
+    unsigned client_count = s_js.model.client_count;
+    if (ready) ap = s_js.model.aps[ap_idx];
+    obs_js_unlock();
+    if (!ready || popup_obj) return;
 
-    focused_net_idx = net_idx;
-
-    if (poll_timer) esp_timer_stop(poll_timer);
-    uart_set_line_callback(NULL);
-
-    /* focus channel on this network */
-    uart_send_command("stop");
-    char cmd[48];
-    snprintf(cmd, sizeof(cmd), "select_networks %d", net->scan_index);
-    uart_send_command(cmd);
-    uart_send_command("start_sniffer");
+    focused_net_idx = ap_idx;
 
     lv_obj_t *scr = lv_scr_act();
     popup_obj = lv_obj_create(scr);
@@ -592,9 +547,10 @@ static void show_network_popup(int net_idx)
     lv_obj_set_style_pad_all(hdr, 0, 0);
     lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    const char *ssid_d = net->ssid[0] ? net->ssid : "(hidden)";
+    char ap_label[40];
+    sc_ap_label(&ap, ap_label, sizeof(ap_label));
     lv_obj_t *tl = lv_label_create(hdr);
-    lv_label_set_text(tl, ssid_d);
+    lv_label_set_text(tl, ap_label);
     lv_obj_set_style_text_font(tl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(tl, UI_ACCENT_TEAL, 0);
     lv_obj_align(tl, LV_ALIGN_LEFT_MID, 0, 0);
@@ -613,21 +569,29 @@ static void show_network_popup(int net_idx)
     /* info */
     lv_obj_t *info1 = lv_label_create(popup_obj);
     char i1[64];
-    snprintf(i1, sizeof(i1), "BSSID: %s", net->bssid);
+    char bssid_txt[18];
+    sc_mac_text(bssid_txt, ap.bssid);
+    snprintf(i1, sizeof(i1), "BSSID: %s", bssid_txt);
     lv_label_set_text(info1, i1);
     lv_obj_set_style_text_color(info1, ui_muted_color(), 0);
     lv_obj_set_style_text_font(info1, &lv_font_montserrat_10, 0);
 
     lv_obj_t *info2 = lv_label_create(popup_obj);
-    char i2[64];
-    snprintf(i2, sizeof(i2), "CH%d | %s | %ddBm | %s", net->channel, net->band, net->rssi, net->security);
+    char i2[32];
+    snprintf(i2, sizeof(i2), "CH%u", ap.channel);
     lv_label_set_text(info2, i2);
     lv_obj_set_style_text_color(info2, ui_muted_color(), 0);
     lv_obj_set_style_text_font(info2, &lv_font_montserrat_10, 0);
 
+    unsigned ap_clients = 0;
+    if (obs_js_lock()) {
+        for (unsigned i = 0; i < s_js.model.client_count; ++i)
+            if (s_js.model.clients[i].ap == (uint8_t)ap_idx) ap_clients++;
+        obs_js_unlock();
+    }
     lv_obj_t *cl_hdr = lv_label_create(popup_obj);
     char ch[32];
-    snprintf(ch, sizeof(ch), "Clients (%d):", net->client_count);
+    snprintf(ch, sizeof(ch), "Clients (%u):", ap_clients);
     lv_label_set_text(cl_hdr, ch);
     lv_obj_set_style_text_color(cl_hdr, UI_ACCENT_TEAL, 0);
     lv_obj_set_style_text_font(cl_hdr, &lv_font_montserrat_12, 0);
@@ -642,13 +606,16 @@ static void show_network_popup(int net_idx)
     lv_obj_set_style_pad_row(net_popup_clients, 2, 0);
     lv_obj_set_flex_flow(net_popup_clients, LV_FLEX_FLOW_COLUMN);
 
-    if (net->client_count == 0) {
+    if (ap_clients == 0) {
         lv_obj_t *nc = lv_label_create(net_popup_clients);
         lv_label_set_text(nc, "No clients yet...");
         lv_obj_set_style_text_color(nc, ui_muted_color(), 0);
         lv_obj_set_style_text_font(nc, &lv_font_montserrat_10, 0);
-    } else {
-        for (int j = 0; j < net->client_count; j++) {
+    } else if (obs_js_lock()) {
+        for (unsigned j = 0; j < client_count; j++) {
+            if (s_js.model.clients[j].ap != (uint8_t)ap_idx) continue;
+            char mac[18];
+            sc_mac_text(mac, s_js.model.clients[j].mac);
             lv_obj_t *cb = lv_btn_create(net_popup_clients);
             lv_obj_set_size(cb, LV_PCT(100), 22);
             lv_obj_set_style_bg_color(cb, ui_bg_color(), 0);
@@ -656,13 +623,14 @@ static void show_network_popup(int net_idx)
             lv_obj_set_style_radius(cb, 4, 0);
             lv_obj_set_style_pad_hor(cb, 4, 0);
             lv_obj_add_event_cb(cb, net_popup_cli_click, LV_EVENT_CLICKED,
-                                (void*)(intptr_t)j);
+                                (void*)(uintptr_t)j);
             lv_obj_t *ml = lv_label_create(cb);
-            lv_label_set_text(ml, net->clients[j]);
+            lv_label_set_text(ml, mac);
             lv_obj_set_style_text_color(ml, ui_text_color(), 0);
             lv_obj_set_style_text_font(ml, &lv_font_montserrat_10, 0);
             lv_obj_align(ml, LV_ALIGN_LEFT_MID, 0, 0);
         }
+        obs_js_unlock();
     }
 }
 
@@ -697,11 +665,9 @@ static void on_net_click(lv_event_t *e)
 
 static void on_cli_click(lv_event_t *e)
 {
-    intptr_t packed = (intptr_t)lv_event_get_user_data(e);
-    int net_i = (int)(packed >> 8);
-    int cli_i = (int)(packed & 0xFF);
+    unsigned cli_i = (unsigned)(uintptr_t)lv_event_get_user_data(e);
     if (!ui_display_lock_wait()) return;
-    show_deauth_popup(net_i, cli_i);
+    show_deauth_popup(cli_i);
     ui_display_unlock_safe();
 }
 
@@ -713,12 +679,27 @@ static void stop_obs_main_build_timer(void)
     }
 }
 
+static unsigned obs_ap_client_count(unsigned ap_i)
+{
+    unsigned n = 0;
+    if (!obs_js_lock()) return 0;
+    for (unsigned i = 0; i < s_js.model.client_count; ++i)
+        if (s_js.model.clients[i].ap == (uint8_t)ap_i) n++;
+    obs_js_unlock();
+    return n;
+}
+
 static void obs_main_append_network(int net_i)
 {
-    if (!obs_list || net_i < 0 || net_i >= obs_net_count)
+    if (!obs_list || !obs_js_lock())
         return;
-
-    obs_network_t *net = &obs_nets[net_i];
+    if (s_js.phase != JS_READY || !s_js.model.complete || (unsigned)net_i >= s_js.model.ap_count) {
+        obs_js_unlock();
+        return;
+    }
+    sc_ap_t ap = s_js.model.aps[net_i];
+    unsigned client_count = s_js.model.client_count;
+    obs_js_unlock();
 
     lv_obj_t *nr = lv_btn_create(obs_list);
     lv_obj_set_size(nr, LV_PCT(100), 26);
@@ -730,9 +711,10 @@ static void obs_main_append_network(int net_i)
 
     lv_obj_t *nl = lv_label_create(nr);
     char ntxt[72];
-    snprintf(ntxt, sizeof(ntxt), "%.32s  CH%d  %dc",
-             net->ssid[0] ? net->ssid : "(hidden)",
-             net->channel, net->client_count);
+    char label[40];
+    sc_ap_label(&ap, label, sizeof(label));
+    unsigned ap_clients = obs_ap_client_count((unsigned)net_i);
+    snprintf(ntxt, sizeof(ntxt), "%s  %uc", label, ap_clients);
     lv_label_set_text(nl, ntxt);
     lv_label_set_long_mode(nl, LV_LABEL_LONG_DOT);
     lv_obj_set_width(nl, 280);
@@ -740,22 +722,40 @@ static void obs_main_append_network(int net_i)
     lv_obj_set_style_text_font(nl, &lv_font_montserrat_10, 0);
     lv_obj_align(nl, LV_ALIGN_LEFT_MID, 0, 0);
 
-    for (int j = 0; j < net->client_count; j++) {
+    unsigned shown = 0;
+    if (!obs_js_lock()) return;
+    for (unsigned j = 0; j < client_count; j++) {
+        if (s_js.model.clients[j].ap != (uint8_t)net_i) continue;
+        if (shown >= MAX_VISIBLE_CLIENTS_PER_AP) break;
+        char mac[18];
+        sc_mac_text(mac, s_js.model.clients[j].mac);
         lv_obj_t *cr = lv_btn_create(obs_list);
         lv_obj_set_size(cr, LV_PCT(100), 20);
         lv_obj_set_style_bg_color(cr, ui_card_color(), 0);
         lv_obj_set_style_bg_color(cr, UI_ACCENT_RED, LV_STATE_PRESSED);
         lv_obj_set_style_radius(cr, 2, 0);
         lv_obj_set_style_pad_hor(cr, 16, 0);
-        intptr_t packed = ((intptr_t)net_i << 8) | (intptr_t)j;
-        lv_obj_add_event_cb(cr, on_cli_click, LV_EVENT_CLICKED, (void *)packed);
+        lv_obj_add_event_cb(cr, on_cli_click, LV_EVENT_CLICKED, (void *)(uintptr_t)j);
 
         lv_obj_t *cl = lv_label_create(cr);
-        lv_label_set_text(cl, net->clients[j]);
+        lv_label_set_text(cl, mac);
         lv_obj_set_style_text_color(cl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(cl, &lv_font_montserrat_10, 0);
         lv_obj_align(cl, LV_ALIGN_LEFT_MID, 0, 0);
+        shown++;
     }
+    obs_js_unlock();
+}
+
+static int obs_model_ap_count(void)
+{
+    int n = 0;
+    if (obs_js_lock()) {
+        if (s_js.phase == JS_READY && s_js.model.complete)
+            n = (int)s_js.model.ap_count;
+        obs_js_unlock();
+    }
+    return n;
 }
 
 static void obs_main_build_step(lv_timer_t *t)
@@ -765,12 +765,13 @@ static void obs_main_build_step(lv_timer_t *t)
         stop_obs_main_build_timer();
         return;
     }
+    int aps = obs_model_ap_count();
     int target = obs_main_build_idx + OBS_MAIN_NETS_PER_TICK;
-    if (target > obs_net_count)
-        target = obs_net_count;
+    if (target > aps)
+        target = aps;
     for (; obs_main_build_idx < target; obs_main_build_idx++)
         obs_main_append_network(obs_main_build_idx);
-    if (obs_main_build_idx >= obs_net_count)
+    if (obs_main_build_idx >= aps)
         stop_obs_main_build_timer();
 }
 
@@ -790,10 +791,23 @@ static void show_main_view(void)
 
     /* status line */
     status_label = lv_label_create(scr);
-    char st[48];
-    int total_cli = 0;
-    for (int i = 0; i < obs_net_count; i++) total_cli += obs_nets[i].client_count;
-    snprintf(st, sizeof(st), "%d networks, %d clients", obs_net_count, total_cli);
+    char st[64];
+    unsigned aps = 0, clients = 0;
+    JsPhase phase = JS_EMPTY;
+    if (obs_js_lock()) {
+        phase = s_js.phase;
+        aps = s_js.model.ap_count;
+        clients = s_js.model.client_count;
+        if (s_js.error[0] && (phase == JS_ERROR || phase == JS_RELOAD_REQUIRED))
+            snprintf(st, sizeof(st), "%s", s_js.error);
+        else if (phase == JS_LOADING)
+            snprintf(st, sizeof(st), "Loading clients...");
+        else
+            snprintf(st, sizeof(st), "%u APs, %u clients", aps, clients);
+        obs_js_unlock();
+    } else {
+        snprintf(st, sizeof(st), "Observer");
+    }
     lv_label_set_text(status_label, st);
     lv_obj_set_style_text_color(status_label, ui_muted_color(), 0);
     lv_obj_set_style_text_font(status_label, &lv_font_montserrat_10, 0);
@@ -809,9 +823,11 @@ static void show_main_view(void)
     lv_obj_set_style_pad_row(obs_list, 2, 0);
     lv_obj_set_flex_flow(obs_list, LV_FLEX_FLOW_COLUMN);
 
-    if (obs_net_count == 0) {
+    if (obs_model_ap_count() == 0) {
         lv_obj_t *nl = lv_label_create(obs_list);
-        lv_label_set_text(nl, "No networks found.\nWaiting for sniffer data...");
+        lv_label_set_text(nl, phase == JS_LOADING
+            ? "Loading client snapshot..."
+            : "No APs with clients.\nRefresh after sniffing.");
         lv_obj_set_style_text_color(nl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0);
     } else {
@@ -881,59 +897,33 @@ static void rebuild_list_content(void)
 
     /* update status label */
     if (status_label) {
-        char st[48];
-        int total_cli = 0;
-        for (int i = 0; i < obs_net_count; i++) total_cli += obs_nets[i].client_count;
-        snprintf(st, sizeof(st), "%d networks, %d clients", obs_net_count, total_cli);
+        char st[64];
+        unsigned aps = 0, clients = 0;
+        if (obs_js_lock()) {
+            aps = s_js.model.ap_count;
+            clients = s_js.model.client_count;
+            if (s_js.phase == JS_LOADING)
+                snprintf(st, sizeof(st), "Loading clients...");
+            else if (s_js.error[0] && (s_js.phase == JS_ERROR || s_js.phase == JS_RELOAD_REQUIRED))
+                snprintf(st, sizeof(st), "%s", s_js.error);
+            else
+                snprintf(st, sizeof(st), "%u APs, %u clients", aps, clients);
+            obs_js_unlock();
+        } else {
+            snprintf(st, sizeof(st), "Observer");
+        }
         lv_label_set_text(status_label, st);
     }
 
-    if (obs_net_count == 0) {
+    int aps = obs_model_ap_count();
+    if (aps == 0) {
         lv_obj_t *nl = lv_label_create(obs_list);
-        lv_label_set_text(nl, "No networks found.\nWaiting for sniffer data...");
+        lv_label_set_text(nl, "No APs with clients.\nRefresh after sniffing.");
         lv_obj_set_style_text_color(nl, ui_muted_color(), 0);
         lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0);
-    }
-
-    for (int i = 0; i < obs_net_count; i++) {
-        obs_network_t *net = &obs_nets[i];
-
-        lv_obj_t *nr = lv_btn_create(obs_list);
-        lv_obj_set_size(nr, LV_PCT(100), 26);
-        lv_obj_set_style_bg_color(nr, ui_card_color(), 0);
-        lv_obj_set_style_bg_color(nr, UI_ACCENT_TEAL, LV_STATE_PRESSED);
-        lv_obj_set_style_radius(nr, 4, 0);
-        lv_obj_set_style_pad_hor(nr, 6, 0);
-        lv_obj_add_event_cb(nr, on_net_click, LV_EVENT_CLICKED, (void*)(intptr_t)i);
-
-        lv_obj_t *nl = lv_label_create(nr);
-        char ntxt[72];
-        snprintf(ntxt, sizeof(ntxt), "%.32s  CH%d  %dc",
-                 net->ssid[0] ? net->ssid : "(hidden)",
-                 net->channel, net->client_count);
-        lv_label_set_text(nl, ntxt);
-        lv_label_set_long_mode(nl, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(nl, 280);
-        lv_obj_set_style_text_color(nl, UI_ACCENT_CYAN, 0);
-        lv_obj_set_style_text_font(nl, &lv_font_montserrat_10, 0);
-        lv_obj_align(nl, LV_ALIGN_LEFT_MID, 0, 0);
-
-        for (int j = 0; j < net->client_count; j++) {
-            lv_obj_t *cr = lv_btn_create(obs_list);
-            lv_obj_set_size(cr, LV_PCT(100), 20);
-            lv_obj_set_style_bg_color(cr, ui_card_color(), 0);
-            lv_obj_set_style_bg_color(cr, UI_ACCENT_RED, LV_STATE_PRESSED);
-            lv_obj_set_style_radius(cr, 2, 0);
-            lv_obj_set_style_pad_hor(cr, 16, 0);
-            intptr_t packed = ((intptr_t)i << 8) | (intptr_t)j;
-            lv_obj_add_event_cb(cr, on_cli_click, LV_EVENT_CLICKED, (void*)packed);
-
-            lv_obj_t *cl = lv_label_create(cr);
-            lv_label_set_text(cl, net->clients[j]);
-            lv_obj_set_style_text_color(cl, ui_muted_color(), 0);
-            lv_obj_set_style_text_font(cl, &lv_font_montserrat_10, 0);
-            lv_obj_align(cl, LV_ALIGN_LEFT_MID, 0, 0);
-        }
+    } else {
+        for (int i = 0; i < aps; i++)
+            obs_main_append_network(i);
     }
 
     lv_obj_scroll_to_y(obs_list, scroll_y, LV_ANIM_OFF);
@@ -943,8 +933,41 @@ static void rebuild_list_content(void)
 static void on_refresh_btn(lv_event_t *e)
 {
     (void)e;
-    if (poll_collecting) return;
-    poll_timer_cb(NULL);
+    JsPhase phase = JS_EMPTY;
+    if (obs_js_lock()) {
+        phase = s_js.phase;
+        obs_js_unlock();
+    }
+    if (phase == JS_LOADING || phase == JS_STARTING || phase == JS_ACTIVE) return;
+    obs_load_clients();
+}
+
+static void obs_apply_phase_ui(void)
+{
+    JsPhase phase = JS_EMPTY;
+    char err[48] = {0};
+    if (obs_js_lock()) {
+        phase = s_js.phase;
+        snprintf(err, sizeof(err), "%s", s_js.error);
+        obs_js_unlock();
+    }
+    poll_collecting = (phase == JS_LOADING);
+    if (phase == JS_ACTIVE) {
+        deauth_active = true;
+        if (deauth_btn_lbl)
+            lv_label_set_text(deauth_btn_lbl, LV_SYMBOL_CLOSE " STOP");
+        return;
+    }
+    if (phase == JS_READY && deauth_btn_lbl && !deauth_active) {
+        if (err[0])
+            lv_label_set_text(deauth_btn_lbl, err);
+        else
+            lv_label_set_text(deauth_btn_lbl, "Deauth Station");
+    }
+    if (obs_list)
+        rebuild_list_content();
+    else if (phase == JS_READY || phase == JS_ERROR || phase == JS_RELOAD_REQUIRED)
+        show_main_view();
 }
 
 static void on_stop_btn(lv_event_t *e)
@@ -1408,8 +1431,9 @@ static void on_scan_complete(const char **lines, int count)
     ESP_LOGI(TAG, "Parsed %d networks", obs_net_count);
 
     obs_running = true;
-    uart_send_command("start_sniffer_noscan");
-    start_poll_timer(POLL_INTERVAL_US);
+    uart_send_command("unselect_networks");
+    uart_send_command("start_sniffer");
+    obs_load_clients();
 
     if (!parse_worker_post(observer_lvgl_dispatch_job, NULL)) {
         if (!ui_lvgl_async_call(observer_apply_main_view, NULL))

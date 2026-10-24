@@ -12,7 +12,7 @@
 
 #define UART_BAUD_RATE        115200
 #define UART_PORT             UART_NUM_1
-#define UART_MAX_LINE_LEN     512
+#define UART_MAX_LINE_LEN     1024
 #define UART_COLLECT_TIMEOUT_MS 25000   /* max wait for end marker */
 
 typedef enum {

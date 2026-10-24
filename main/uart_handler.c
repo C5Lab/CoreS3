@@ -160,6 +160,7 @@ static void uart_rx_task(void *arg)
     uint8_t *rx_buf = malloc(UART_BUF_SIZE);
     char *line_buf = malloc(UART_MAX_LINE_LEN);
     int line_pos = 0;
+    bool discard_line = false;
     int idle_loops = 0;
 
     while (1) {
@@ -187,12 +188,16 @@ static void uart_rx_task(void *arg)
             for (int i = 0; i < len; i++) {
                 char c = rx_buf[i];
                 if (c == '\n' || c == '\r') {
-                    if (line_pos > 0) {
+                    if (line_pos > 0 && !discard_line) {
                         line_buf[line_pos] = '\0';
                         process_line(line_buf);
-                        line_pos = 0;
                     }
-                } else if (line_pos < UART_MAX_LINE_LEN - 1) {
+                    line_pos = 0;
+                    discard_line = false;
+                } else if (c == 0 || line_pos >= UART_MAX_LINE_LEN - 1) {
+                    line_pos = 0;
+                    discard_line = true;
+                } else if (!discard_line) {
                     line_buf[line_pos++] = c;
                 }
             }

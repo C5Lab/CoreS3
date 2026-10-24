@@ -4,35 +4,32 @@
 #include "wifi_scan_screen.h"
 #include "ui_helpers.h"
 #include "uart_handler.h"
-#include "psram_dynarr.h"
+#include "janos_sniffer_session.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <ctype.h>
 
 static const char *TAG = "sniffer";
 
-/* ---- observer data ---- */
+#define MAX_VISIBLE_CLIENTS_PER_AP 8
 
-#define OBS_NET_HARD_CAP    256
-#define MAX_CLIENTS_PER_NET 32
-
-typedef struct {
-    char ssid[33];
-    int  channel;
-    int  client_count;
-    char clients[MAX_CLIENTS_PER_NET][18];
-} observer_network_t;
-
-static observer_network_t *obs_networks = NULL;
-static int obs_networks_cap = 0;
-static int obs_network_count = 0;
-static int obs_current_net   = -1;
-static bool obs_collecting   = false;
-static esp_timer_handle_t obs_timeout_timer = NULL;
+static JsSession s_js;
+static SemaphoreHandle_t s_js_mutex = NULL;
+static lv_timer_t *s_js_tick_timer = NULL;
+static JsPhase s_js_seen_phase = JS_EMPTY;
+static lv_obj_t *clients_status = NULL;
+static lv_obj_t *deauth_popup = NULL;
+static lv_obj_t *deauth_btn_lbl = NULL;
+static unsigned deauth_client_idx = 0;
+static bool deauth_active = false;
+static bool clients_view = false;
 
 /* ---- sniffer state ---- */
 
@@ -64,121 +61,99 @@ static void sniff_uart_line_cb(const char *line)
     }
 }
 
-/* ================================================================== */
-/*  Show Clients -- collect show_sniffer_results                      */
-/* ================================================================== */
-
-static bool parse_observer_network_line(const char *line, observer_network_t *net)
+static uint32_t sniff_now_ms(void)
 {
-    if (line[0] == ' ' || line[0] == '\t') return false;
-    const char *ch_marker = strstr(line, ", CH");
-    if (!ch_marker) return false;
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
 
-    int ssid_len = ch_marker - line;
-    if (ssid_len > 32) ssid_len = 32;
-    memcpy(net->ssid, line, ssid_len);
-    net->ssid[ssid_len] = '\0';
+static bool sniff_js_send(void *ctx, const char *command)
+{
+    (void)ctx;
+    uart_send_command(command);
+    return true;
+}
 
-    int channel = 0, count = 0;
-    if (sscanf(ch_marker, ", CH%d: %d", &channel, &count) == 2) {
-        net->channel = channel;
-        net->client_count = 0;
-        memset(net->clients, 0, sizeof(net->clients));
-        return true;
+static void sniff_js_ensure(void)
+{
+    if (!s_js_mutex) {
+        s_js_mutex = xSemaphoreCreateMutex();
+        js_init(&s_js, sniff_js_send, NULL);
     }
-    return false;
 }
 
-static bool parse_observer_client_line(const char *line, char *mac_out, size_t mac_size)
+static bool sniff_js_lock(void)
 {
-    if (line[0] != ' ') return false;
-    const char *p = line;
-    while (*p == ' ' || *p == '\t') p++;
-    if (strlen(p) >= 17 && p[2] == ':' && p[5] == ':') {
-        strncpy(mac_out, p, mac_size - 1);
-        mac_out[mac_size - 1] = '\0';
-        int len = strlen(mac_out);
-        while (len > 0 && (mac_out[len-1] == ' ' || mac_out[len-1] == '\r' || mac_out[len-1] == '\n'))
-            mac_out[--len] = '\0';
-        return true;
-    }
-    return false;
+    sniff_js_ensure();
+    return s_js_mutex && xSemaphoreTake(s_js_mutex, pdMS_TO_TICKS(50)) == pdTRUE;
 }
 
-static void obs_timeout_cb(void *arg)
+static void sniff_js_unlock(void)
 {
-    (void)arg;
-    if (!obs_collecting) return;
-    obs_collecting = false;
-
-    uart_set_line_callback(sniff_uart_line_cb);
-
-    ESP_LOGI(TAG, "Clients collected: %d networks", obs_network_count);
-
-    bsp_display_lock(0);
-    show_clients_screen();
-    bsp_display_unlock();
+    if (s_js_mutex) xSemaphoreGive(s_js_mutex);
 }
 
-static void obs_collect_line_cb(const char *line)
+static void sniff_js_line_cb(const char *line)
 {
-    if (strstr(line, "Sniffer packet count:")) {
-        const char *p = strstr(line, "Sniffer packet count:");
+    const char *p = strstr(line, "Sniffer packet count:");
+    if (p) {
         pkt_count = atoi(p + strlen("Sniffer packet count:"));
-        return;
-    }
-
-    if (strstr(line, "No APs with clients found")) {
-        return;
-    }
-
-    observer_network_t net;
-    memset(&net, 0, sizeof(net));
-    if (parse_observer_network_line(line, &net)) {
-        if (psram_dynarr_ensure((void **)&obs_networks, &obs_networks_cap,
-                                obs_network_count + 1, sizeof(*obs_networks),
-                                OBS_NET_HARD_CAP)) {
-            obs_networks[obs_network_count] = net;
-            obs_current_net = obs_network_count;
-            obs_network_count++;
-        }
-        esp_timer_stop(obs_timeout_timer);
-        esp_timer_start_once(obs_timeout_timer, 800000);
-        return;
-    }
-
-    char mac[18];
-    if (parse_observer_client_line(line, mac, sizeof(mac))) {
-        if (obs_current_net >= 0 && obs_current_net < obs_network_count) {
-            observer_network_t *cur = &obs_networks[obs_current_net];
-            if (cur->client_count < MAX_CLIENTS_PER_NET) {
-                memcpy(cur->clients[cur->client_count], mac, 17);
-                cur->clients[cur->client_count][17] = '\0';
-                cur->client_count++;
+        if (pkt_label) {
+            bsp_display_lock(0);
+            if (pkt_label) {
+                char txt[48];
+                snprintf(txt, sizeof(txt), "Packets: %d", pkt_count);
+                lv_label_set_text(pkt_label, txt);
             }
+            bsp_display_unlock();
         }
-        esp_timer_stop(obs_timeout_timer);
-        esp_timer_start_once(obs_timeout_timer, 800000);
+    }
+    if (!sniff_js_lock()) return;
+    js_line(&s_js, line, sniff_now_ms());
+    sniff_js_unlock();
+}
+
+static void sniff_apply_phase_ui(void);
+
+static void sniff_js_tick_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!sniff_js_lock()) return;
+    js_tick(&s_js, sniff_now_ms());
+    JsPhase phase = s_js.phase;
+    bool changed = phase != s_js_seen_phase;
+    s_js_seen_phase = phase;
+    sniff_js_unlock();
+    if (changed)
+        sniff_apply_phase_ui();
+}
+
+static void sniff_js_start_tick(void)
+{
+    if (!s_js_tick_timer)
+        s_js_tick_timer = lv_timer_create(sniff_js_tick_cb, 250, NULL);
+}
+
+static void sniff_js_stop_tick(void)
+{
+    if (s_js_tick_timer) {
+        lv_timer_delete(s_js_tick_timer);
+        s_js_tick_timer = NULL;
     }
 }
 
 static void start_collect_clients(void)
 {
-    obs_network_count = 0;
-    obs_current_net = -1;
-    obs_collecting = true;
-
-    if (!obs_timeout_timer) {
-        esp_timer_create_args_t args = {
-            .callback = obs_timeout_cb,
-            .name = "obs_timeout",
-        };
-        esp_timer_create(&args, &obs_timeout_timer);
+    sniff_js_ensure();
+    uart_send_command("stop");
+    uart_set_line_callback(sniff_js_line_cb);
+    clients_view = true;
+    if (sniff_js_lock()) {
+        js_load(&s_js, sniff_now_ms());
+        s_js_seen_phase = s_js.phase;
+        sniff_js_unlock();
     }
-
-    uart_set_line_callback(obs_collect_line_cb);
-    esp_timer_start_once(obs_timeout_timer, 2000000);
-    uart_send_command("show_sniffer_results");
+    sniff_js_start_tick();
+    show_clients_screen();
 }
 
 /* ---- Clients screen UI ---- */
@@ -186,60 +161,228 @@ static void start_collect_clients(void)
 static void on_clients_back(lv_event_t *e)
 {
     (void)e;
+    clients_view = false;
+    sniff_js_stop_tick();
+    if (sniff_js_lock()) {
+        if (s_js.phase == JS_STARTING || s_js.phase == JS_ACTIVE)
+            js_cancel(&s_js);
+        sniff_js_unlock();
+    }
+    uart_send_command("start_sniffer");
     bsp_display_lock(0);
     show_sniffer_main();
     bsp_display_unlock();
 }
 
+static void close_sniff_deauth(void)
+{
+    if (sniff_js_lock()) {
+        if (s_js.phase == JS_STARTING || s_js.phase == JS_ACTIVE)
+            js_cancel(&s_js);
+        sniff_js_unlock();
+    }
+    deauth_active = false;
+    if (deauth_popup) {
+        lv_obj_del(deauth_popup);
+        deauth_popup = NULL;
+    }
+    deauth_btn_lbl = NULL;
+    uart_set_line_callback(sniff_js_line_cb);
+    show_clients_screen();
+}
+
+static void sniff_deauth_btn_cb(lv_event_t *e)
+{
+    int action = (int)(intptr_t)lv_event_get_user_data(e);
+    if (action == 1) {
+        close_sniff_deauth();
+        return;
+    }
+    if (deauth_active) {
+        close_sniff_deauth();
+        return;
+    }
+    uart_set_line_callback(sniff_js_line_cb);
+    if (sniff_js_lock()) {
+        js_start(&s_js, deauth_client_idx, sniff_now_ms());
+        s_js_seen_phase = s_js.phase;
+        sniff_js_unlock();
+    }
+    if (deauth_btn_lbl)
+        lv_label_set_text(deauth_btn_lbl, "Starting...");
+}
+
+static void show_sniff_deauth(unsigned client_idx)
+{
+    if (!sniff_js_lock()) return;
+    bool ready = s_js.phase == JS_READY && client_idx < s_js.model.client_count;
+    sc_client_t client = {0};
+    sc_ap_t ap = {0};
+    if (ready) {
+        client = s_js.model.clients[client_idx];
+        ap = s_js.model.aps[client.ap];
+    }
+    sniff_js_unlock();
+    if (!ready) return;
+
+    deauth_client_idx = client_idx;
+    deauth_active = false;
+    if (deauth_popup) {
+        lv_obj_del(deauth_popup);
+        deauth_popup = NULL;
+    }
+
+    char label[40], mac[18], bssid[18];
+    sc_ap_label(&ap, label, sizeof(label));
+    sc_mac_text(mac, client.mac);
+    sc_mac_text(bssid, ap.bssid);
+
+    lv_obj_t *scr = lv_scr_act();
+    deauth_popup = lv_obj_create(scr);
+    lv_obj_set_size(deauth_popup, 290, 170);
+    lv_obj_center(deauth_popup);
+    lv_obj_set_style_bg_color(deauth_popup, ui_card_color(), 0);
+    lv_obj_set_style_border_color(deauth_popup, UI_ACCENT_RED, 0);
+    lv_obj_set_style_border_width(deauth_popup, 2, 0);
+    lv_obj_set_style_radius(deauth_popup, 12, 0);
+    lv_obj_set_style_pad_all(deauth_popup, 10, 0);
+    lv_obj_set_flex_flow(deauth_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(deauth_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(deauth_popup);
+    lv_label_set_text(title, "Deauth Station");
+    lv_obj_set_style_text_color(title, UI_ACCENT_RED, 0);
+
+    lv_obj_t *l1 = lv_label_create(deauth_popup);
+    lv_label_set_text(l1, label);
+    lv_obj_t *l2 = lv_label_create(deauth_popup);
+    lv_label_set_text(l2, mac);
+    lv_obj_set_style_text_color(l2, UI_ACCENT_RED, 0);
+    lv_obj_t *l3 = lv_label_create(deauth_popup);
+    lv_label_set_text(l3, bssid);
+    lv_obj_set_style_text_color(l3, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(l3, &lv_font_montserrat_10, 0);
+
+    lv_obj_t *row = lv_obj_create(deauth_popup);
+    lv_obj_set_size(row, LV_PCT(100), 34);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+
+    lv_obj_t *go = lv_btn_create(row);
+    lv_obj_set_size(go, 150, 32);
+    lv_obj_set_style_bg_color(go, UI_ACCENT_RED, 0);
+    lv_obj_add_event_cb(go, sniff_deauth_btn_cb, LV_EVENT_CLICKED, (void*)(intptr_t)0);
+    deauth_btn_lbl = lv_label_create(go);
+    lv_label_set_text(deauth_btn_lbl, "Deauth Station");
+    lv_obj_center(deauth_btn_lbl);
+
+    lv_obj_t *x = lv_btn_create(row);
+    lv_obj_set_size(x, 70, 32);
+    lv_obj_add_event_cb(x, sniff_deauth_btn_cb, LV_EVENT_CLICKED, (void*)(intptr_t)1);
+    lv_obj_t *xl = lv_label_create(x);
+    lv_label_set_text(xl, "Close");
+    lv_obj_center(xl);
+}
+
+static void on_sniff_cli_click(lv_event_t *e)
+{
+    unsigned idx = (unsigned)(uintptr_t)lv_event_get_user_data(e);
+    show_sniff_deauth(idx);
+}
+
 static void show_clients_screen(void)
 {
     lv_obj_t *scr = ui_screen_clear();
-    /* ui_screen_clear() frees the sniffer screen's packet label; drop the
-     * dangling pointer so the packet-counter callback stays a no-op until
-     * show_sniffer_main() recreates it on Back. */
     pkt_label = NULL;
+    deauth_popup = NULL;
+    deauth_btn_lbl = NULL;
     ui_create_top_bar(scr, "Clients", on_clients_back, NULL);
 
+    clients_status = lv_label_create(scr);
+    lv_obj_set_pos(clients_status, 8, 38);
+    lv_obj_set_style_text_font(clients_status, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(clients_status, ui_muted_color(), 0);
+
     lv_obj_t *list = lv_obj_create(scr);
-    lv_obj_set_size(list, LV_PCT(100), 240 - 36);
-    lv_obj_set_pos(list, 0, 36);
+    lv_obj_set_size(list, LV_PCT(100), 240 - 52);
+    lv_obj_set_pos(list, 0, 52);
     lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(list, 0, 0);
     lv_obj_set_style_pad_all(list, 6, 0);
     lv_obj_set_style_pad_row(list, 2, 0);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 
-    if (obs_network_count == 0) {
+    if (!sniff_js_lock()) return;
+    JsPhase phase = s_js.phase;
+    unsigned aps = s_js.model.ap_count;
+    unsigned clients = s_js.model.client_count;
+    char err[48];
+    snprintf(err, sizeof(err), "%s", s_js.error);
+    if (phase == JS_LOADING)
+        lv_label_set_text(clients_status, "Loading...");
+    else if (phase == JS_ERROR || phase == JS_RELOAD_REQUIRED)
+        lv_label_set_text(clients_status, err[0] ? err : "Reload required");
+    else {
+        char st[48];
+        snprintf(st, sizeof(st), "%u APs, %u clients", aps, clients);
+        lv_label_set_text(clients_status, st);
+    }
+    if (phase != JS_READY || !s_js.model.complete) {
         lv_obj_t *lbl = lv_label_create(list);
-        lv_label_set_text(lbl, "No clients found yet.\nLet sniffer run longer.");
+        lv_label_set_text(lbl, phase == JS_LOADING
+            ? "Loading client snapshot..."
+            : "No clients. Refresh from Sniffer.");
         lv_obj_set_style_text_color(lbl, ui_muted_color(), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        sniff_js_unlock();
         return;
     }
-
-    for (int i = 0; i < obs_network_count; i++) {
-        observer_network_t *net = &obs_networks[i];
-
+    for (unsigned i = 0; i < aps; i++) {
+        char label[40];
+        unsigned shown = 0, ap_clients = 0;
+        sc_ap_label(&s_js.model.aps[i], label, sizeof(label));
+        for (unsigned j = 0; j < clients; j++)
+            if (s_js.model.clients[j].ap == (uint8_t)i) ap_clients++;
         lv_obj_t *net_lbl = lv_label_create(list);
-        char net_txt[64];
-        snprintf(net_txt, sizeof(net_txt), "%.32s (%d client%s)",
-                 net->ssid[0] ? net->ssid : "(hidden)",
-                 net->client_count,
-                 net->client_count == 1 ? "" : "s");
+        char net_txt[72];
+        snprintf(net_txt, sizeof(net_txt), "%s (%u)", label, ap_clients);
         lv_label_set_text(net_lbl, net_txt);
         lv_obj_set_style_text_color(net_lbl, UI_ACCENT_CYAN, 0);
         lv_obj_set_style_text_font(net_lbl, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_pad_top(net_lbl, 4, 0);
-
-        for (int j = 0; j < net->client_count; j++) {
-            lv_obj_t *c_lbl = lv_label_create(list);
-            char c_txt[24];
-            snprintf(c_txt, sizeof(c_txt), "  %s", net->clients[j]);
-            lv_label_set_text(c_lbl, c_txt);
-            lv_obj_set_style_text_color(c_lbl, UI_ACCENT_TEAL, 0);
+        for (unsigned j = 0; j < clients; j++) {
+            if (s_js.model.clients[j].ap != (uint8_t)i) continue;
+            if (shown >= MAX_VISIBLE_CLIENTS_PER_AP) break;
+            char mac[18];
+            sc_mac_text(mac, s_js.model.clients[j].mac);
+            lv_obj_t *btn = lv_btn_create(list);
+            lv_obj_set_size(btn, LV_PCT(100), 20);
+            lv_obj_set_style_bg_color(btn, ui_card_color(), 0);
+            lv_obj_add_event_cb(btn, on_sniff_cli_click, LV_EVENT_CLICKED, (void*)(uintptr_t)j);
+            lv_obj_t *c_lbl = lv_label_create(btn);
+            lv_label_set_text(c_lbl, mac);
             lv_obj_set_style_text_font(c_lbl, &lv_font_montserrat_10, 0);
+            shown++;
         }
     }
+    sniff_js_unlock();
+}
+
+static void sniff_apply_phase_ui(void)
+{
+    JsPhase phase = JS_EMPTY;
+    if (sniff_js_lock()) {
+        phase = s_js.phase;
+        sniff_js_unlock();
+    }
+    if (phase == JS_ACTIVE) {
+        deauth_active = true;
+        if (deauth_btn_lbl)
+            lv_label_set_text(deauth_btn_lbl, LV_SYMBOL_CLOSE " STOP");
+        return;
+    }
+    if (clients_view && !deauth_popup)
+        show_clients_screen();
 }
 
 /* ================================================================== */
@@ -251,7 +394,16 @@ static void on_stop(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "Sniffer STOP");
     sniff_running = false;
+    clients_view = false;
+    sniff_js_stop_tick();
     uart_set_line_callback(NULL);
+    if (sniff_js_lock()) {
+        if (s_js.phase == JS_STARTING || s_js.phase == JS_ACTIVE)
+            js_cancel(&s_js);
+        js_free(&s_js);
+        js_init(&s_js, sniff_js_send, NULL);
+        sniff_js_unlock();
+    }
     uart_send_command("stop");
     bsp_display_lock(0);
     show_attack_select_screen();
@@ -281,7 +433,16 @@ static void on_back(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "Sniffer back");
     sniff_running = false;
+    clients_view = false;
+    sniff_js_stop_tick();
     uart_set_line_callback(NULL);
+    if (sniff_js_lock()) {
+        if (s_js.phase == JS_STARTING || s_js.phase == JS_ACTIVE)
+            js_cancel(&s_js);
+        js_free(&s_js);
+        js_init(&s_js, sniff_js_send, NULL);
+        sniff_js_unlock();
+    }
     uart_send_command("stop");
     bsp_display_lock(0);
     show_attack_select_screen();

@@ -41,6 +41,7 @@ idf_component_register(
         "screens/wardrive_screen.c"
         "screens/sae_overflow_screen.c"
         "screens/sniffer_screen.c"
+        "screens/sniffer_clients_model.c"
         "screens/karma_screen.c"
         "screens/network_observer_screen.c"
         "screens/compromised_data_screen.c"
