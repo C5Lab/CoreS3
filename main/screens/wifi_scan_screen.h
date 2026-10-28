@@ -25,6 +25,9 @@ typedef struct {
 
 void show_wifi_scan_screen(void);
 
+/** Parse one scan_networks / show_scan_results CSV line into net. */
+bool wifi_scan_parse_network_line(const char *line, wifi_network_t *net);
+
 wifi_network_t *wifi_scan_get_networks(void);
 int  wifi_scan_get_network_count(void);
 int  wifi_scan_get_selected(int *indices, int max_indices);

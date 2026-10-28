@@ -128,37 +128,15 @@ For commands without explicit end markers, use a timeout with empty-read detecti
 
 ### Key Parsing Recipes
 
-**Network scan CSV** -- fields: index, SSID, (empty), BSSID, channel, security, RSSI, band:
-```c
-// Line: "1","AX3","","C4:2B:44:12:29:20","112","WPA2","-59","5GHz"
-static bool parse_network_line(const char *line, wifi_network_t *net) {
-    if (line[0] != '"') return false;
-    char temp[256];
-    strncpy(temp, line, sizeof(temp) - 1);
-    char *fields[8] = {NULL};
-    int field_idx = 0;
-    char *p = temp;
-    while (*p && field_idx < 8) {
-        if (*p == '"') {
-            p++;
-            fields[field_idx] = p;
-            while (*p && *p != '"') p++;
-            if (*p == '"') { *p = '\0'; p++; }
-            field_idx++;
-            if (*p == ',') p++;
-        } else { p++; }
-    }
-    if (field_idx < 8) return false;
-    net->index = atoi(fields[0]);
-    strncpy(net->ssid, fields[1], sizeof(net->ssid) - 1);
-    strncpy(net->bssid, fields[3], sizeof(net->bssid) - 1);
-    net->channel = atoi(fields[4]);
-    strncpy(net->security, fields[5], sizeof(net->security) - 1);
-    net->rssi = atoi(fields[6]);
-    strncpy(net->band, fields[7], sizeof(net->band) - 1);
-    return true;
-}
+**Network scan CSV** -- `"index","SSID","vendor","BSSID","channel","auth","RSSI","band"`.
+
+Firmware writes RFC 4180: one pair of enclosing quotes per field, a `"` inside a field as `""`. SSID and vendor may contain commas. Use `wifi_scan_parse_network_line()` (`main/scan_csv.c`). Do not stop at the first `"` or split on commas. Example:
+
 ```
+"1","moja ""specjalna"" siec","Acme ""X"" Inc","AA:BB:CC:DD:EE:FF","6","WPA2","-50","2.4GHz"
+```
+
+displays SSID `moja "specjalna" siec` and vendor `Acme "X" Inc`. An empty third field stays empty; an optional 9th field is the vendor only in that case. Plain lines such as `"1","AX3","","C4:2B:44:12:29:20","112","WPA2","-59","5GHz"` are unchanged.
 
 **Host list** -- parse `"  IP  ->  MAC"` lines:
 ```c

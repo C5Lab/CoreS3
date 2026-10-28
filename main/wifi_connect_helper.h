@@ -16,7 +16,9 @@ typedef void (*wifi_connect_done_cb_t)(bool success, void *user_data);
 
 bool wifi_network_is_open(const wifi_network_t *net);
 
-/** Escape SSID/password for quoted CLI arguments. */
+/** Escape SSID/password for quoted CLI arguments.
+ *  A quote or backslash is prefixed with a backslash. This is not RFC 4180
+ *  (which doubles quotes). Callers wrap the result in double quotes. */
 void wifi_escape_quoted_arg(const char *in, char *out, size_t out_sz);
 
 /** Look up password from `show_pass evil` output. Blocks up to ~800 ms. */

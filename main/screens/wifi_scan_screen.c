@@ -6,6 +6,7 @@
 #include "uart_handler.h"
 #include "psram_dynarr.h"
 #include "parse_worker.h"
+#include "scan_csv.h"
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
@@ -35,57 +36,33 @@ int wifi_scan_get_selected(int *indices, int max_indices)
     return count;
 }
 
+_Static_assert(sizeof(((wifi_network_t *)0)->ssid) == sizeof(((scan_csv_network_t *)0)->ssid),
+               "ssid buffer");
+_Static_assert(sizeof(((wifi_network_t *)0)->vendor) == sizeof(((scan_csv_network_t *)0)->vendor),
+               "vendor buffer");
+_Static_assert(sizeof(((wifi_network_t *)0)->bssid) == sizeof(((scan_csv_network_t *)0)->bssid),
+               "bssid buffer");
+_Static_assert(sizeof(((wifi_network_t *)0)->security) == sizeof(((scan_csv_network_t *)0)->security),
+               "security buffer");
+_Static_assert(sizeof(((wifi_network_t *)0)->band) == sizeof(((scan_csv_network_t *)0)->band),
+               "band buffer");
+
 /* ---- CSV parsing ---- */
-static bool parse_network_line(const char *line, wifi_network_t *net)
+bool wifi_scan_parse_network_line(const char *line, wifi_network_t *net)
 {
-    if (line[0] != '"') return false;
+    scan_csv_network_t parsed;
+    if (!net || !scan_csv_parse_line(line, &parsed))
+        return false;
 
-    char temp[512];
-    strncpy(temp, line, sizeof(temp) - 1);
-    temp[sizeof(temp) - 1] = '\0';
-
-    char *fields[10] = {NULL};
-    int field_idx = 0;
-    char *p = temp;
-    while (*p && field_idx < 10) {
-        if (*p == '"') {
-            p++;
-            fields[field_idx++] = p;
-            while (*p && *p != '"') p++;
-            if (*p == '"') { *p = '\0'; p++; }
-            if (*p == ',') p++;
-        } else {
-            p++;
-        }
-    }
-    if (field_idx < 8) return false;
-
-    net->index = (uint8_t)atoi(fields[0]);
-    strncpy(net->ssid, fields[1], sizeof(net->ssid) - 1);
-    net->ssid[sizeof(net->ssid) - 1] = '\0';
-    strncpy(net->bssid, fields[3], sizeof(net->bssid) - 1);
-    net->bssid[sizeof(net->bssid) - 1] = '\0';
-    net->channel = (uint8_t)atoi(fields[4]);
-    strncpy(net->security, fields[5], sizeof(net->security) - 1);
-    net->security[sizeof(net->security) - 1] = '\0';
-    net->rssi = (int8_t)atoi(fields[6]);
-    strncpy(net->band, fields[7], sizeof(net->band) - 1);
-    net->band[sizeof(net->band) - 1] = '\0';
-
-    net->vendor[0] = '\0';
-    if (field_idx >= 3 && fields[2] && fields[2][0] != '\0') {
-        strncpy(net->vendor, fields[2], sizeof(net->vendor) - 1);
-        net->vendor[sizeof(net->vendor) - 1] = '\0';
-    } else if (field_idx >= 9 && fields[8] && fields[8][0] != '\0') {
-        strncpy(net->vendor, fields[8], sizeof(net->vendor) - 1);
-        net->vendor[sizeof(net->vendor) - 1] = '\0';
-    }
-
-    net->mfp_capable = false;
-    net->mfp_known   = false;
-    net->uptime[0]   = '\0';
-    net->info_label  = NULL;
-    net->selected    = false;
+    memset(net, 0, sizeof(*net));
+    net->index = (uint8_t)parsed.index;
+    memcpy(net->ssid, parsed.ssid, sizeof(net->ssid));
+    memcpy(net->bssid, parsed.bssid, sizeof(net->bssid));
+    net->channel = (uint8_t)parsed.channel;
+    memcpy(net->security, parsed.security, sizeof(net->security));
+    net->rssi = (int8_t)parsed.rssi;
+    memcpy(net->band, parsed.band, sizeof(net->band));
+    memcpy(net->vendor, parsed.vendor, sizeof(net->vendor));
     return true;
 }
 
@@ -304,7 +281,7 @@ static void on_scan_complete(const char **lines, int line_count)
     network_count = 0;
     for (int i = 0; i < line_count; i++) {
         wifi_network_t net;
-        if (!parse_network_line(lines[i], &net)) continue;
+        if (!wifi_scan_parse_network_line(lines[i], &net)) continue;
         if (!psram_dynarr_ensure((void **)&networks, &networks_cap,
                                  network_count + 1, sizeof(*networks),
                                  WIFI_NET_HARD_CAP)) {
