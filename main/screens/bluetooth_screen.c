@@ -21,6 +21,7 @@ static void show_bt_menu(void);
 static void show_airtag_scan(void);
 static void show_bt_locator_scanning(void);
 static void show_jammer_screen(void);
+static void show_blespam_screen(void);
 
 /* ================================================================== */
 /*  Navigation                                                         */
@@ -795,6 +796,66 @@ static void show_jammer_screen(void)
 }
 
 /* ================================================================== */
+/*  IOS/Samsung BLE Spam                                               */
+/* ================================================================== */
+
+static lv_timer_t *s_blespam_kb_timer;
+
+static void stop_blespam_kb_timer(void)
+{
+    if (s_blespam_kb_timer) {
+        lv_timer_del(s_blespam_kb_timer);
+        s_blespam_kb_timer = NULL;
+    }
+}
+
+static void on_back_blespam(lv_event_t *e)
+{
+    (void)e;
+    stop_blespam_kb_timer();
+    uart_set_line_callback(NULL);
+    uart_send_command("stop");
+    if (!ui_display_lock_wait()) return;
+    show_bt_menu();
+    ui_display_unlock_safe();
+}
+
+static void blespam_kb_poll(lv_timer_t *t)
+{
+    (void)t;
+    uint8_t key = cardkb_read_key();
+    if (key == 0) return;
+    if (key == 0x1B || key == 0x08 || key == 0x7F)
+        on_back_blespam(NULL);
+}
+
+static void show_blespam_screen(void)
+{
+    lv_obj_t *scr = ui_screen_clear();
+    ui_create_top_bar(scr, "IOS/Samsung Spam", on_back_blespam, NULL);
+
+    lv_obj_t *center = lv_obj_create(scr);
+    lv_obj_set_size(center, LV_PCT(100), 240 - 36);
+    lv_obj_set_pos(center, 0, 36);
+    lv_obj_set_style_bg_opa(center, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(center, 0, 0);
+    lv_obj_clear_flag(center, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *lbl = lv_label_create(center);
+    lv_label_set_text(lbl, "Spam Active");
+    lv_obj_set_style_text_color(lbl, UI_ACCENT_ORANGE, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_20, 0);
+    lv_obj_center(lbl);
+
+    uart_set_line_callback(NULL);
+    uart_send_command("start_blespam");
+
+    s_blespam_kb_timer = lv_timer_create(blespam_kb_poll, 50, NULL);
+
+    ESP_LOGI(TAG, "BLE spam started");
+}
+
+/* ================================================================== */
 /*  BT Menu tiles                                                      */
 /* ================================================================== */
 
@@ -819,6 +880,13 @@ static void on_jammer(lv_event_t *e)
     show_jammer_screen();
 }
 
+static void on_blespam(lv_event_t *e)
+{
+    (void)e;
+    ESP_LOGI(TAG, "IOS/Samsung Spam selected");
+    show_blespam_screen();
+}
+
 static void show_bt_menu(void)
 {
     stop_airtag_kb_timer();
@@ -826,6 +894,7 @@ static void show_bt_menu(void)
     stop_track_kb_timer();
     stop_bt_build_timer();
     stop_jam_kb_timer();
+    stop_blespam_kb_timer();
 
     lv_obj_t *scr = ui_screen_clear();
     ui_create_top_bar(scr, "Bluetooth", on_back_home, NULL);
@@ -846,6 +915,7 @@ static void show_bt_menu(void)
     ui_create_tile(grid, LV_SYMBOL_WIFI,      "AirTag\nScan",   UI_ACCENT_CYAN,   on_airtag,  NULL);
     ui_create_tile(grid, LV_SYMBOL_BLUETOOTH, "BT\nLocator",    UI_ACCENT_PURPLE, on_locator, NULL);
     ui_create_tile(grid, LV_SYMBOL_WARNING,   "Jammer",         UI_ACCENT_RED,    on_jammer,  NULL);
+    ui_create_tile(grid, LV_SYMBOL_WARNING,   "IOS/Samsung\nSpam", UI_ACCENT_ORANGE, on_blespam, NULL);
 }
 
 /* ================================================================== */
