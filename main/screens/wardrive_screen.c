@@ -2033,45 +2033,12 @@ static void show_file_picker(void)
 
 /* ---- AP scan + picker ---- */
 
-static const char *ap_parse_quoted(const char *p, char *out, int max)
-{
-    if (*p != '"') return NULL;
-    p++;
-    int i = 0;
-    while (*p && *p != '"' && i < max - 1) out[i++] = *p++;
-    out[i] = '\0';
-    if (*p != '"') return NULL;
-    p++;
-    if (*p == ',') p++;
-    return p;
-}
-
-static bool ap_parse_line(const char *line, wifi_network_t *net)
-{
-    if (line[0] != '"') return false;
-    const char *p = line;
-    char field[64];
-    memset(net, 0, sizeof(*net));
-
-    p = ap_parse_quoted(p, field, sizeof(field));       if (!p) return false;
-    net->index = (uint8_t)atoi(field);
-    p = ap_parse_quoted(p, net->ssid, sizeof(net->ssid)); if (!p) return false;
-    p = ap_parse_quoted(p, field, sizeof(field));        if (!p) return false; /* empty */
-    p = ap_parse_quoted(p, net->bssid, sizeof(net->bssid)); if (!p) return false;
-    p = ap_parse_quoted(p, field, sizeof(field));        if (!p) return false;
-    net->channel = (uint8_t)atoi(field);
-    p = ap_parse_quoted(p, net->security, sizeof(net->security)); if (!p) return false;
-    p = ap_parse_quoted(p, field, sizeof(field));        if (!p) return false;
-    net->rssi = (int8_t)atoi(field);
-    return true;
-}
-
 static void ap_collect_cb(const char **lines, int line_count)
 {
     wd_aps_cnt = 0;
     for (int i = 0; i < line_count; i++) {
         wifi_network_t net;
-        if (ap_parse_line(lines[i], &net)) {
+        if (wifi_scan_parse_network_line(lines[i], &net)) {
             if (net.ssid[0] == '\0') continue;
             if (!psram_dynarr_ensure((void **)&wd_aps, &wd_aps_cap,
                                      wd_aps_cnt + 1, sizeof(*wd_aps), 256))

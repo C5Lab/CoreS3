@@ -5,6 +5,7 @@
 #include "psram_dynarr.h"
 #include "parse_worker.h"
 #include "janos_sniffer_session.h"
+#include "scan_csv.h"
 #include "bsp/m5stack_core_s3.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -122,41 +123,28 @@ static void obs_js_ensure(void);
 /*  CSV parsing (scan_networks output)                                 */
 /* ================================================================== */
 
-static const char *parse_quoted(const char *p, char *out, int max)
-{
-    if (*p != '"') return NULL;
-    p++;
-    int i = 0;
-    while (*p && *p != '"' && i < max - 1) out[i++] = *p++;
-    out[i] = '\0';
-    if (*p != '"') return NULL;
-    p++;
-    if (*p == ',') p++;
-    return p;
-}
+_Static_assert(sizeof(((obs_network_t *)0)->ssid) == sizeof(((scan_csv_network_t *)0)->ssid),
+               "ssid buffer");
+_Static_assert(sizeof(((obs_network_t *)0)->bssid) == sizeof(((scan_csv_network_t *)0)->bssid),
+               "bssid buffer");
+_Static_assert(sizeof(((obs_network_t *)0)->security) == sizeof(((scan_csv_network_t *)0)->security),
+               "security buffer");
+_Static_assert(sizeof(((obs_network_t *)0)->band) == sizeof(((scan_csv_network_t *)0)->band),
+               "band buffer");
 
 static bool parse_scan_line(const char *line, obs_network_t *net)
 {
-    if (line[0] != '"') return false;
-    const char *p = line;
-    char field[64];
+    scan_csv_network_t parsed;
+    if (!net || !scan_csv_parse_line(line, &parsed))
+        return false;
 
-    p = parse_quoted(p, field, sizeof(field));  if (!p) return false;
-    net->scan_index = atoi(field);
-
-    p = parse_quoted(p, net->ssid, sizeof(net->ssid));   if (!p) return false;
-    p = parse_quoted(p, field, sizeof(field));            if (!p) return false; /* empty */
-    p = parse_quoted(p, net->bssid, sizeof(net->bssid)); if (!p) return false;
-
-    p = parse_quoted(p, field, sizeof(field));  if (!p) return false;
-    net->channel = atoi(field);
-
-    p = parse_quoted(p, net->security, sizeof(net->security)); if (!p) return false;
-
-    p = parse_quoted(p, field, sizeof(field));  if (!p) return false;
-    net->rssi = atoi(field);
-
-    parse_quoted(p, net->band, sizeof(net->band));
+    net->scan_index = parsed.index;
+    memcpy(net->ssid, parsed.ssid, sizeof(net->ssid));
+    memcpy(net->bssid, parsed.bssid, sizeof(net->bssid));
+    net->channel = parsed.channel;
+    memcpy(net->security, parsed.security, sizeof(net->security));
+    net->rssi = parsed.rssi;
+    memcpy(net->band, parsed.band, sizeof(net->band));
     net->client_count = 0;
     memset(net->clients, 0, sizeof(net->clients));
     return true;

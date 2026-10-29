@@ -13,6 +13,7 @@ idf_component_register(
         "device_info.c"
         "inspect_network.c"
         "wifi_connect_helper.c"
+        "scan_csv.c"
         "gps_module.c"
         "led_indicator.c"
         "ir_tx.c"
